@@ -102,7 +102,7 @@ if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
 
 // Parse flags
 let jdText = '';
-let modelName = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+let modelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 let saveReport = true;
 
 for (let i = 0; i < args.length; i++) {
@@ -288,8 +288,8 @@ LEGITIMACY: <High Confidence | Proceed with Caution | Suspicious>
 // Retry helper with exponential backoff + model fallback
 // ---------------------------------------------------------------------------
 const FALLBACK_MODELS = [
-  'gemini-2.5-flash-lite',  // lighter model, separate quota pool
-  'gemini-2.0-flash-lite',  // even lighter fallback
+  'gemini-3.1-flash-lite',  // lighter model, separate quota pool
+  'gemini-3-flash-preview', // preview fallback
 ];
 
 function sleep(ms) {
