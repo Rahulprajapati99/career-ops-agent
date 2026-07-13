@@ -285,35 +285,136 @@ LEGITIMACY: <High Confidence | Proceed with Caution | Suspicious>
 `;
 
 // ---------------------------------------------------------------------------
-// Call Gemini API
+// Retry helper with exponential backoff + model fallback
+// ---------------------------------------------------------------------------
+const FALLBACK_MODELS = [
+  'gemini-2.5-flash-lite',  // lighter model, separate quota pool
+  'gemini-2.0-flash-lite',  // even lighter fallback
+];
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function parseRetryDelay(errorMsg) {
+  // Extract server-suggested retry delay (e.g., "Please retry in 11.899172084s")
+  const match = String(errorMsg).match(/retry in ([0-9.]+)s/i);
+  return match ? Math.ceil(parseFloat(match[1]) * 1000) : null;
+}
+
+function isQuotaExhausted(errorMsg) {
+  // Daily quota exhausted (limit: 0) vs transient per-minute limit
+  return /limit:\s*0/i.test(errorMsg) && /free_tier/i.test(errorMsg);
+}
+
+async function callGeminiWithRetry(genAI, modelId, contents, maxRetries = 3) {
+  const model = genAI.getGenerativeModel({
+    model: modelId,
+    generationConfig: {
+      temperature: 0.4,
+      maxOutputTokens: 8192,
+    },
+  });
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await model.generateContent(contents);
+      return result.response.text();
+    } catch (err) {
+      const msg = String(err.message || '');
+      const sanitizedMsg = msg.split(apiKey).join('[REDACTED]');
+
+      // Non-retryable errors — bail immediately
+      if (msg.includes('API_KEY') || msg.includes('PERMISSION_DENIED') || msg.includes('NOT_FOUND')) {
+        throw new Error(`Gemini API error (non-retryable): ${sanitizedMsg}`);
+      }
+
+      // Daily quota fully exhausted — no point retrying this model
+      if (isQuotaExhausted(msg)) {
+        throw new Error(`QUOTA_EXHAUSTED: ${sanitizedMsg}`);
+      }
+
+      // Transient rate limit (429) — retry with backoff
+      if (msg.includes('429') || msg.includes('quota') || msg.includes('rate') || msg.includes('RESOURCE_EXHAUSTED')) {
+        const serverDelay = parseRetryDelay(msg);
+        const backoff = serverDelay || Math.min(2000 * Math.pow(2, attempt - 1), 30000);
+        if (attempt < maxRetries) {
+          console.warn(`⚠️   Rate limited on attempt ${attempt}/${maxRetries}. Retrying in ${(backoff / 1000).toFixed(1)}s...`);
+          await sleep(backoff);
+          continue;
+        }
+      }
+
+      // Other errors on last attempt
+      if (attempt === maxRetries) {
+        throw new Error(`Gemini API error after ${maxRetries} attempts: ${sanitizedMsg}`);
+      }
+
+      // Generic retry for unknown transient errors
+      const backoff = 2000 * Math.pow(2, attempt - 1);
+      console.warn(`⚠️   Attempt ${attempt}/${maxRetries} failed. Retrying in ${(backoff / 1000).toFixed(1)}s...`);
+      await sleep(backoff);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Call Gemini API (with retry + fallback)
 // ---------------------------------------------------------------------------
 console.log(`🤖  Calling Gemini (${modelName})... this may take 30-60 seconds.\n`);
 
 const genAI = new GoogleGenerativeAI(apiKey);
-const model = genAI.getGenerativeModel({
-  model: modelName,
-  generationConfig: {
-    temperature: 0.4,      // deterministic enough for structured evaluation
-    maxOutputTokens: 8192, // full 7-block evaluation
-  },
-});
+const contents = [
+  { text: systemPrompt },
+  { text: `\n\nJOB DESCRIPTION TO EVALUATE:\n\n${jdText}` },
+];
 
 let evaluationText;
+let usedModel = modelName;
+
 try {
-  const result = await model.generateContent([
-    { text: systemPrompt },
-    { text: `\n\nJOB DESCRIPTION TO EVALUATE:\n\n${jdText}` },
-  ]);
-  evaluationText = result.response.text();
-} catch (err) {
-  const sanitizedMsg = (err.message || '').split(apiKey).join('[REDACTED]');
-  console.error('❌  Gemini API error:', sanitizedMsg);
-  if (sanitizedMsg.includes('API_KEY')) {
-    console.error('    Check your GEMINI_API_KEY in .env');
-  } else if (sanitizedMsg.includes('quota') || sanitizedMsg.includes('rate')) {
-    console.error('    You may have hit the free-tier rate limit. Wait 60s and retry.');
+  evaluationText = await callGeminiWithRetry(genAI, modelName, contents);
+} catch (primaryErr) {
+  const isPrimaryQuotaExhausted = String(primaryErr.message).startsWith('QUOTA_EXHAUSTED');
+
+  if (isPrimaryQuotaExhausted) {
+    console.warn(`⚠️   ${modelName} daily quota exhausted. Trying fallback models...`);
+
+    let fallbackSucceeded = false;
+    for (const fallback of FALLBACK_MODELS) {
+      if (fallback === modelName) continue; // skip if same as primary
+      try {
+        console.log(`🔄  Trying fallback model: ${fallback}...`);
+        evaluationText = await callGeminiWithRetry(genAI, fallback, contents);
+        usedModel = fallback;
+        fallbackSucceeded = true;
+        console.log(`✅  Fallback to ${fallback} succeeded.`);
+        break;
+      } catch (fbErr) {
+        console.warn(`⚠️   Fallback ${fallback} also failed: ${String(fbErr.message).slice(0, 120)}`);
+      }
+    }
+
+    if (!fallbackSucceeded) {
+      console.error(`\n❌  All models exhausted. Your free-tier daily quota is used up.`);
+      console.error(`    Options:`);
+      console.error(`    1. Wait until tomorrow for quota reset`);
+      console.error(`    2. Upgrade to paid tier at https://aistudio.google.com/`);
+      console.error(`    3. Use a different API key\n`);
+      process.exit(1);
+    }
+  } else {
+    // Non-quota error — just report and exit
+    console.error('❌  Gemini API error:', primaryErr.message);
+    if (primaryErr.message.includes('API_KEY')) {
+      console.error('    Check your GEMINI_API_KEY in .env');
+    }
+    process.exit(1);
   }
-  process.exit(1);
+}
+
+if (usedModel !== modelName) {
+  console.warn(`\n⚠️   Note: evaluation was produced by ${usedModel} (fallback), not ${modelName}.`);
 }
 
 try {
