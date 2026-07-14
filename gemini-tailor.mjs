@@ -202,18 +202,38 @@ CANDIDATE PROFILE & TARGETS (config/profile.yml)
 ${profileYml}
 
 ═══════════════════════════════════════════════════════
-IMPORTANT OPERATING RULES FOR THIS CLI SESSION
+CRITICAL OPERATING RULES — STRICTLY ENFORCED
 ═══════════════════════════════════════════════════════
-1. NEVER invent skills, metrics, or experience the candidate does not have.
-   Only use facts from cv.md and profile.yml. Reformulate, but do NOT fabricate.
-2. Inject JD keywords naturally by rephrasing the real experience using JD vocabulary.
-3. Apply the 6-second clarity gate: strongest matching evidence first in each section.
-4. Replace ALL {{PLACEHOLDERS}} in the HTML Template exactly as the template instructs.
-5. Your final output MUST be the complete, raw, tailored HTML document.
-6. Do NOT wrap the output in markdown code fences or backticks. Output raw HTML
-   starting with <!DOCTYPE html> or <html>.
-7. You have NO tools — no web access, no file writes. Your ONLY output is the HTML.
-8. Do NOT add ANY text before or after the HTML. The output must be parseable HTML.
+
+ANTI-FABRICATION (ZERO TOLERANCE):
+1. NEVER invent skills, metrics, projects, certifications, or experience.
+   Every fact in the output MUST trace back to cv.md or profile.yml.
+2. NEVER add words like "Verified", "Certified", "Accredited" to certifications
+   unless those EXACT words appear in cv.md. Copy certification titles verbatim.
+3. NEVER invent project names or descriptions. Use ONLY the projects listed in cv.md.
+4. NEVER fabricate metrics (percentages, dollar amounts, team sizes) that are not in cv.md.
+
+CONTENT PRESERVATION (MANDATORY):
+5. Include ALL work experience entries from cv.md. Do NOT remove any job.
+6. Include ALL skills and competencies from cv.md. You may REORDER them
+   (JD-relevant skills first) but do NOT delete any.
+7. Include ALL certifications and education from cv.md. Copy them exactly.
+8. Include ALL projects from cv.md. Do NOT remove any.
+9. Portfolio URL (rahulprajapati99.vercel.app) MUST appear in the contact section.
+
+TAILORING (WHAT YOU CAN DO):
+10. REPHRASE bullet points using JD vocabulary — same facts, different words.
+11. REORDER sections and bullets — strongest JD matches first (6-second clarity gate).
+12. ADJUST the Executive Summary to emphasize JD-relevant strengths.
+13. ADD relevant competency tags from the JD IF the candidate demonstrably has them
+    based on their experience in cv.md.
+
+OUTPUT FORMAT:
+14. Replace ALL {{PLACEHOLDERS}} in the HTML Template exactly as instructed.
+15. Output the complete, raw HTML document starting with <!DOCTYPE html>.
+16. Do NOT wrap output in markdown code fences or backticks.
+17. Do NOT add ANY text before or after the HTML.
+18. You have NO tools — your ONLY output is the HTML document.
 `;
 
 // ---------------------------------------------------------------------------
