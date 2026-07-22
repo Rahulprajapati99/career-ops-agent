@@ -177,11 +177,18 @@ if (isMain) {
 
   // Fallback: full browser extraction (needs Playwright browsers installed).
   try {
-    execFileSync(process.execPath, [join(__dirname, 'browser-extract.mjs'), url], {
-      stdio: ['ignore', 'inherit', 'inherit'],
+    const out = execFileSync(process.execPath, [join(__dirname, 'browser-extract.mjs'), url], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      maxBuffer: 1024 * 1024 * 10,
     });
-  } catch {
-    console.error('jd-fetch: browser extraction failed too');
+    process.stdout.write(out);
+  } catch (err) {
+    // Surface the browser's real failure so the bot can relay an actionable
+    // cause (e.g. "Executable doesn't exist" → chromium not installed).
+    const tail = String(err.stderr || err.message || '')
+      .split('\n').filter(Boolean).slice(-3).join(' · ');
+    console.error(`jd-fetch: browser extraction failed too — ${tail}`);
     process.exit(1);
   }
 }

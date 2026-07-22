@@ -166,7 +166,8 @@ function friendlyError(error) {
     return '⚙️ The server is missing its GEMINI_API_KEY — add it to .env on the host and restart the bot. Evaluation, tailoring, and cover letters need it.';
   }
   if (/jd-fetch|browser-extract|playwright|Navigation/i.test(errMsg)) {
-    return '❌ Could not extract the job description — the page may need login or block bots. Copy the JD text and paste it here instead.';
+    const tail = redactSecrets(((error?.stderr || '').trim() || errMsg).split('\n').filter(Boolean).slice(-2).join(' · ')).slice(0, 250);
+    return `❌ Could not extract the job description — the page may need login or block bots. Copy the JD text and paste it here instead.\n\n🔧 Cause: ${tail || 'unknown'}\n(Send /diag if this keeps happening.)`;
   }
   // Generic: surface the tail of the real error so failures are actionable
   // without SSH-ing into the host for logs.
@@ -650,7 +651,8 @@ async function handleHelp(chatId) {
     `/apply <url> — ATS prefill cheat-sheet\n\n` +
     `*Setup:*\n` +
     `/setcv — import/replace your resume\n` +
-    `/whoami — your id + data root\n\n` +
+    `/whoami — your id + data root\n` +
+    `/diag — server health check\n\n` +
     `_I prepare everything but never submit applications — you stay in control._`,
     { parse_mode: 'Markdown' });
 }
@@ -660,6 +662,41 @@ async function handleWhoami(chatId) {
   await bot.sendMessage(chatId,
     `🪪 *Your identity*\n\nTelegram id: \`${chatId}\`\nData root: \`users/${chatId}/\`\nCV on file: ${cvIsPlaceholder(root) ? '❌ not yet' : '✅ yes'}`,
     { parse_mode: 'Markdown' });
+}
+
+/** /diag — server health report, so failures are debuggable from Telegram. */
+async function handleDiag(chatId) {
+  const lines = ['🩺 Server diagnostics', ''];
+
+  // Code version — is the VM actually running the latest fix?
+  try {
+    const { stdout } = await execAsync('git log --oneline -1', { cwd: REPO_ROOT });
+    lines.push(`Code: ${stdout.trim().slice(0, 60)}`);
+  } catch { lines.push('Code: git unavailable'); }
+
+  lines.push(`Node: ${process.version} ${typeof fetch === 'function' ? '(fetch ✅)' : '(fetch ❌ — Node ≥18 required for API extraction!)'}`);
+  lines.push(`GEMINI_API_KEY: ${process.env.GEMINI_API_KEY ? '✅ set' : '❌ MISSING — eval/tailor/cover will fail'}`);
+  lines.push(`ADZUNA keys: app_id ${process.env.ADZUNA_APP_ID ? '✅' : '❌'} · app_key ${process.env.ADZUNA_APP_KEY ? '✅' : '❌'}`);
+  lines.push(`Allowlist: ${ALLOWED_IDS.size} user(s)`);
+
+  // Playwright chromium — the browser fallback for non-ATS URLs (LinkedIn etc.).
+  try {
+    const { chromium } = await import('playwright');
+    const exe = chromium.executablePath();
+    lines.push(`Chromium: ${fs.existsSync(exe) ? '✅ installed' : '❌ MISSING — run: npx playwright install chromium --with-deps'}`);
+  } catch (e) {
+    lines.push(`Chromium: ❌ playwright not loadable (${String(e.message).slice(0, 80)})`);
+  }
+
+  // Live ATS API reachability (the no-browser extraction path).
+  if (typeof fetch === 'function') {
+    try {
+      const res = await fetch('https://api.ashbyhq.com/posting-api/job-board/ashby', { redirect: 'error' });
+      lines.push(`Ashby API: ${res.ok ? '✅ reachable' : `⚠️ HTTP ${res.status}`}`);
+    } catch (e) { lines.push(`Ashby API: ❌ ${String(e.message).slice(0, 60)}`); }
+  }
+
+  await bot.sendMessage(chatId, redactSecrets(lines.join('\n')));
 }
 
 // ---------------------------------------------------------------------------
@@ -695,6 +732,7 @@ bot.on('message', async (msg) => {
     if (text === '/start') return await handleStart(chatId);
     if (text === '/help') return await handleHelp(chatId);
     if (text === '/whoami') return await handleWhoami(chatId);
+    if (text === '/diag') return await handleDiag(chatId);
     if (text === '/jobs') return await handleJobs(chatId);
     if (text === '/scan') return await handleScan(chatId);
     if (text === '/tailor') return await handleTailor(chatId);
