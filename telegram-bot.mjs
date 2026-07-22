@@ -712,6 +712,10 @@ function isAllowed(msg) {
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
 
+  // Receipt log — makes "did the message even reach THIS process?" provable
+  // from pm2 logs (duplicate pollers with the same token steal updates).
+  console.log(`[recv] chat=${chatId} from=${msg.from?.id} ${msg.document ? `doc:${msg.document.file_name}` : `text:${(msg.text || '').slice(0, 80)}`}`);
+
   if (!isAllowed(msg)) {
     if (msg.chat?.type === 'private') {
       await bot.sendMessage(chatId,
