@@ -77,10 +77,12 @@ export function scaffoldUser(userId, opts = {}) {
     }
   }
 
-  // Seeds from repo examples (only where still missing).
+  // Seeds from repo examples (only where still missing). Portals prefer the
+  // Family Edition US/CA seed; the upstream example is the fallback.
   seed(join(REPO_ROOT, 'config', 'profile.example.yml'), join(root, 'config', 'profile.yml'));
   seed(join(REPO_ROOT, 'config', 'cv-facts.example.json'), join(root, 'config', 'cv-facts.json'));
-  seed(join(REPO_ROOT, 'templates', 'portals.example.yml'), join(root, 'portals.yml'));
+  seed(join(REPO_ROOT, 'templates', 'portals.family.yml'), join(root, 'portals.yml'))
+    || seed(join(REPO_ROOT, 'templates', 'portals.example.yml'), join(root, 'portals.yml'));
 
   if (!existsSync(join(root, 'cv.md'))) {
     writeFileSync(join(root, 'cv.md'), [

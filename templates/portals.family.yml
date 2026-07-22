@@ -1,0 +1,154 @@
+# Family Edition — US/Canada portal seed (Phase 2)
+#
+# This is the starting portals.yml for the shared `_global` job pool (and the
+# default seed for new family users). scaffold-user.mjs copies it to
+# users/<id>/portals.yml on first scaffold; edit that copy, not this template.
+#
+# Layout follows templates/portals.example.yml — see it for every option.
+# After customizing, validate with:  node verify-portals.mjs
+#
+# API keys: the adzuna entries need ADZUNA_APP_ID + ADZUNA_APP_KEY in .env.
+
+scan_history:
+  recheck_after_days: 30
+
+# ── Title filter — CUSTOMIZE to the family's target roles ─────────────────
+title_filter:
+  positive:
+    - engineer
+    - developer
+    - analyst
+    - manager
+  negative:
+    - unpaid
+    - volunteer
+    - intern
+
+# ── Location filter — US + Canada focus ───────────────────────────────────
+location_filter:
+  always_allow:
+    - "United States"
+    - "Canada"
+  allow:
+    - "Remote"
+    - "United States"
+    - "Canada"
+    - "USA"
+    - "Toronto"
+    - "Vancouver"
+    - "Montreal"
+    - "Calgary"
+    - "Ottawa"
+    - "New York"
+    - "San Francisco"
+    - "Seattle"
+    - "Austin"
+    - "Boston"
+    - "Chicago"
+  block:
+    - "India"        # flip when the India toggle (below) is enabled
+    - "United Kingdom"
+    - "Germany"
+    - "Poland"
+    - "China"
+
+# ── Aggregator / board feeds ──────────────────────────────────────────────
+job_boards:
+
+  # Adzuna — one provider, official per-country endpoints. Free API key.
+  - name: Adzuna US
+    careers_url: https://www.adzuna.com
+    provider: adzuna
+    country: us
+    what: "software engineer"        # CUSTOMIZE per family member's target
+    max_days_old: 7
+    max_pages: 3
+    enabled: true
+    notes: "US-wide aggregator — needs ADZUNA_APP_ID/KEY in .env"
+
+  - name: Adzuna Canada
+    careers_url: https://www.adzuna.ca
+    provider: adzuna
+    country: ca
+    what: "software engineer"        # CUSTOMIZE
+    max_days_old: 7
+    max_pages: 3
+    enabled: true
+    notes: "Canada-wide aggregator — needs ADZUNA_APP_ID/KEY in .env"
+
+  # ── INDIA TOGGLE (deferred — Phase 8): flip enabled to true, and remove
+  #    "India" from location_filter.block above, when the decision lands. ──
+  - name: Adzuna India
+    careers_url: https://www.adzuna.in
+    provider: adzuna
+    country: in
+    what: "software engineer"
+    max_days_old: 7
+    max_pages: 3
+    enabled: false
+    notes: "DEFERRED toggle — do not enable until the India decision is made"
+
+  # The Muse — free public feed, strong US coverage. No key needed.
+  - name: The Muse
+    careers_url: https://www.themuse.com/search
+    provider: themuse
+    enabled: true
+    notes: "US-heavy curated board — zero-auth"
+
+  # Himalayas — remote-first roles (US/CA-friendly). No key needed.
+  - name: Himalayas
+    careers_url: https://himalayas.app/jobs
+    provider: himalayas
+    enabled: true
+    notes: "Remote roles — zero-auth"
+
+  # Generic schema.org JSON-LD harvester — point at ANY careers page that
+  # embeds JobPosting markup (what Google for Jobs reads). One entry per page.
+  - name: Example JSON-LD company   # CUSTOMIZE or disable
+    careers_url: https://example.com/careers
+    provider: jsonld
+    enabled: false
+    notes: "Template row — copy per long-tail company careers page"
+
+# ── Tracked companies — US/CA starter list (ATS auto-detected) ────────────
+# STARTER ONLY: verify slugs with `node verify-portals.mjs` and customize to
+# the family's real target employers. ATS-hosted URLs auto-detect the provider.
+tracked_companies:
+
+  - name: Stripe
+    careers_url: https://stripe.com/jobs
+    api: https://boards-api.greenhouse.io/v1/boards/stripe/jobs
+    enabled: true
+
+  - name: Datadog
+    careers_url: https://careers.datadoghq.com
+    api: https://boards-api.greenhouse.io/v1/boards/datadog/jobs
+    enabled: true
+
+  - name: Cloudflare
+    careers_url: https://www.cloudflare.com/careers
+    api: https://boards-api.greenhouse.io/v1/boards/cloudflare/jobs
+    enabled: true
+
+  - name: Figma
+    careers_url: https://www.figma.com/careers
+    api: https://boards-api.greenhouse.io/v1/boards/figma/jobs
+    enabled: false
+
+  - name: Coinbase
+    careers_url: https://www.coinbase.com/careers
+    api: https://boards-api.greenhouse.io/v1/boards/coinbase/jobs
+    enabled: false
+
+  - name: Wealthsimple            # Canada
+    careers_url: https://jobs.lever.co/wealthsimple
+    enabled: true
+
+  - name: 1Password               # Canada
+    careers_url: https://jobs.lever.co/1password
+    enabled: false
+
+  - name: Shopify                 # Canada — custom careers site
+    careers_url: https://www.shopify.com/careers
+    enabled: false
+    notes: "Custom careers stack — needs a jsonld or local-parser entry"
