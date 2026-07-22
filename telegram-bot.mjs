@@ -274,6 +274,26 @@ async function handleTailor(chatId) {
     state.htmlPath = htmlPath;
     chatState.set(chatId, state);
 
+    // ATS match report — before (original cv.md) vs after (tailored HTML).
+    try {
+      const { root } = userCtx(chatId);
+      const { stdout: ats } = await execAsync(
+        `${script('ats-match.mjs')} --jd ${q(state.jdFile)} --cv ${q(path.join(root, 'cv.md'))} --html ${q(htmlPath)}`,
+        userCtx(chatId).opts,
+      );
+      const before = parseMarker(ats, 'ATS_BEFORE');
+      const after = parseMarker(ats, 'ATS_AFTER');
+      const missing = parseMarker(ats, 'ATS_MISSING');
+      if (before && after) {
+        let atsMsg = `📊 *ATS keyword match:* ${before}% → *${after}%*`;
+        if (missing) atsMsg += `\n🔎 Still missing: _${missing.split(';').map((s) => s.trim()).join(', ')}_`;
+        atsMsg += '\n_(Missing terms are only added if they are true — the fact-checker blocks fabrication.)_';
+        await bot.sendMessage(chatId, atsMsg, { parse_mode: 'Markdown' });
+      }
+    } catch (atsErr) {
+      console.error(`[${chatId}] ats-match error (non-fatal):`, atsErr.message);
+    }
+
     await bot.sendMessage(chatId,
       `✅ *Done!* Next steps:\n• /cover — cover-letter PDF\n• /applykit — full apply kit\n• /status — your tracker`,
       { parse_mode: 'Markdown' });

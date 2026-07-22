@@ -338,6 +338,7 @@ const USER_PATHS = [
   'gemini-tailor.mjs',
   'gemini-cover.mjs',
   'cv-import.mjs',
+  'ats-match.mjs',
   'user-env.mjs',
   'run-as-user.mjs',
   'scaffold-user.mjs',
