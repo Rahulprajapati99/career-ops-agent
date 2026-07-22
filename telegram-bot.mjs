@@ -61,6 +61,10 @@ if (ALLOWED_IDS.size === 0) {
   process.exit(1);
 }
 
+if (!process.env.GEMINI_API_KEY) {
+  console.warn('⚠️  GEMINI_API_KEY is not set — evaluation, tailoring, and cover letters WILL fail until it is added to .env and the bot is restarted.');
+}
+
 const bot = new TelegramBot(token, { polling: true });
 console.log(`🤖 Career-Ops Family Bot online — serving ${ALLOWED_IDS.size} allowlisted user(s).`);
 
@@ -137,14 +141,38 @@ const parseMarker = (stdout, marker) => {
   return match ? match[1].trim() : null;
 };
 
-function friendlyError(errMsg) {
-  if (/429|quota|rate|QUOTA_EXHAUSTED/i.test(errMsg)) {
-    return '⚠️ *Rate limit hit* — the free Gemini quota is temporarily exhausted. Wait ~60s and retry (daily cap resets tomorrow).';
+/** Strip secrets from text destined for a Telegram message. */
+function redactSecrets(text) {
+  let out = String(text || '');
+  for (const key of ['GEMINI_API_KEY', 'TELEGRAM_BOT_TOKEN', 'OPENAI_API_KEY', 'ADZUNA_APP_KEY', 'ADZUNA_APP_ID']) {
+    const val = process.env[key];
+    if (val) out = out.split(val).join('[redacted]');
   }
-  if (/browser-extract|playwright|Navigation/i.test(errMsg)) {
-    return '❌ *Could not extract the job description* — the page may need login or block bots. Copy the JD text and paste it here instead.';
+  return out.replace(/([?&]key=)[^&\s]+/gi, '$1[redacted]');
+}
+
+/**
+ * Build a plain-text error reply that names the actual cause. Plain text on
+ * purpose: raw error detail contains Markdown-hostile characters, and a
+ * parse_mode failure would swallow the message entirely.
+ * @param {Error & {stderr?: string, stdout?: string}} error
+ */
+function friendlyError(error) {
+  const errMsg = (error && (error.message || String(error))) || '';
+  if (/429|quota|rate limit|QUOTA_EXHAUSTED/i.test(errMsg)) {
+    return '⚠️ Rate limit hit — the free Gemini quota is temporarily exhausted. Wait ~60s and retry (daily cap resets tomorrow).';
   }
-  return '❌ *Something went wrong.* Please retry in a moment; if it persists, check the bot logs.';
+  if (/GEMINI_API_KEY/i.test(`${errMsg}${error?.stderr || ''}${error?.stdout || ''}`)) {
+    return '⚙️ The server is missing its GEMINI_API_KEY — add it to .env on the host and restart the bot. Evaluation, tailoring, and cover letters need it.';
+  }
+  if (/jd-fetch|browser-extract|playwright|Navigation/i.test(errMsg)) {
+    return '❌ Could not extract the job description — the page may need login or block bots. Copy the JD text and paste it here instead.';
+  }
+  // Generic: surface the tail of the real error so failures are actionable
+  // without SSH-ing into the host for logs.
+  const rawDetail = (error?.stderr || '').trim() || (error?.stdout || '').trim() || errMsg;
+  const detail = redactSecrets(rawDetail.split('\n').filter(Boolean).slice(-3).join(' · ')).slice(0, 350);
+  return `❌ Something went wrong.\n\nCause: ${detail || 'unknown — check the bot logs'}\n\nRetry in a moment; if it persists, send this message to the admin.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -165,7 +193,12 @@ async function evaluateJd(chatId, { url = null, pastedText = null }) {
   try {
     if (url) {
       await bot.sendMessage(chatId, `⏳ Extracting job description...\n🔗 ${url}`);
-      await execAsync(`${script('browser-extract.mjs')} "${url}" > ${q(jdFile)}`, longOpts);
+      // API-first (Ashby/Greenhouse/Lever public APIs), browser fallback.
+      await execAsync(`${script('jd-fetch.mjs')} "${url}" > ${q(jdFile)}`, longOpts);
+      const jd = fs.existsSync(jdFile) ? fs.readFileSync(jdFile, 'utf-8') : '';
+      if (jd.trim().length < 100) {
+        throw Object.assign(new Error('jd-fetch: extracted JD is empty'), { stderr: 'jd-fetch produced no usable text' });
+      }
     } else {
       fs.writeFileSync(jdFile, pastedText);
       await bot.sendMessage(chatId, '⏳ Got the pasted job description.');
@@ -218,7 +251,7 @@ async function evaluateJd(chatId, { url = null, pastedText = null }) {
     });
   } catch (error) {
     console.error(`[${chatId}] evaluate error:`, error);
-    await bot.sendMessage(chatId, friendlyError(error.message || ''), { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, friendlyError(error));
   }
 }
 
@@ -299,7 +332,7 @@ async function handleTailor(chatId) {
       { parse_mode: 'Markdown' });
   } catch (error) {
     console.error(`[${chatId}] tailor error:`, error);
-    await bot.sendMessage(chatId, friendlyError(error.message || ''), { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, friendlyError(error));
   }
 }
 
@@ -343,7 +376,7 @@ async function handleCover(chatId, { silent = false } = {}) {
     return coverPdf;
   } catch (error) {
     console.error(`[${chatId}] cover error:`, error);
-    if (!silent) await bot.sendMessage(chatId, friendlyError(error.message || ''), { parse_mode: 'Markdown' });
+    if (!silent) await bot.sendMessage(chatId, friendlyError(error));
     return null;
   }
 }
@@ -439,7 +472,7 @@ async function handleDocument(chatId, doc) {
     }
   } catch (error) {
     console.error(`[${chatId}] cv import error:`, error);
-    await bot.sendMessage(chatId, friendlyError(error.message || ''), { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, friendlyError(error));
   }
 }
 
@@ -698,7 +731,7 @@ bot.on('message', async (msg) => {
       'ℹ️ Send a job URL, paste a full JD, or use /help to see what I can do.');
   } catch (error) {
     console.error(`[${chatId}] router error:`, error);
-    await bot.sendMessage(chatId, friendlyError(error.message || ''), { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, friendlyError(error));
   }
 });
 

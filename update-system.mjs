@@ -339,6 +339,7 @@ const USER_PATHS = [
   'gemini-cover.mjs',
   'cv-import.mjs',
   'ats-match.mjs',
+  'jd-fetch.mjs',
   'user-env.mjs',
   'run-as-user.mjs',
   'scaffold-user.mjs',
