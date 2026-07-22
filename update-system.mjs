@@ -329,6 +329,18 @@ const USER_PATHS = [
   'plugins.lock',
   '.claude/settings.json',
   '.claude/hooks/',
+  // Fork-local system files (Family Edition) — these do NOT exist upstream, so
+  // they must never be checked out from FETCH_HEAD. Listing them here keeps
+  // the updater from touching them and satisfies the path-coverage check.
+  // NOTE: no quote characters in comments inside this array — the regex-based
+  // extractArrayFromSource() treats any quote as a string delimiter.
+  'telegram-bot.mjs',
+  'gemini-tailor.mjs',
+  'user-env.mjs',
+  'run-as-user.mjs',
+  'scaffold-user.mjs',
+  'family-isolation-tests.mjs',
+  'users/',
 ];
 
 function parseVersionFile(raw) {

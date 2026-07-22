@@ -117,3 +117,5 @@ plan/
 
 # Web
 .career-ops-web/logo-cache/
+# Family Edition: per-user data roots (PII — backed up separately, never committed)
+users/

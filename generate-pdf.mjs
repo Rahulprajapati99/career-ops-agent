@@ -31,8 +31,15 @@ import { randomUUID } from 'node:crypto';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PDF_PAGE_MARGIN = '0.6in';
 
+// User-data root: honors CAREER_OPS_USER_ROOT for multi-user setups where each
+// person's cv.md / output/ / data/ live outside the repo (e.g. users/<id>/).
+// Falls back to the repo root, preserving single-user behavior unchanged.
+const USER_ROOT = process.env.CAREER_OPS_USER_ROOT
+  ? resolve(process.env.CAREER_OPS_USER_ROOT)
+  : __dirname;
+
 // Ensure output directory exists (fresh setup)
-mkdirSync(resolve(__dirname, 'output'), { recursive: true });
+mkdirSync(resolve(USER_ROOT, 'output'), { recursive: true });
 
 /**
  * Normalize text for ATS compatibility by converting problematic Unicode.
@@ -213,7 +220,7 @@ export function validateCvSectionOrder(html, cvMarkdown, { allowReorder = false 
  */
 export function repoRelativeManifestPath(pathValue) {
   if (!pathValue) return '';
-  const rel = relative(__dirname, resolve(pathValue));
+  const rel = relative(USER_ROOT, resolve(pathValue));
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return '';
   return rel.split(sep).join('/');
 }
@@ -245,8 +252,8 @@ export function injectPrintPageCss(html, format = 'a4') {
  * gitignored output/ artifacts and is meaningless on another machine.
  */
 function updatePDFManifest(reportNum, pdfPath, htmlPath, format) {
-  const manifestPath = resolve(__dirname, 'data', 'pdf-index.tsv');
-  const toRel = (p) => relative(__dirname, p).split(sep).join('/');
+  const manifestPath = resolve(USER_ROOT, 'data', 'pdf-index.tsv');
+  const toRel = (p) => relative(USER_ROOT, p).split(sep).join('/');
   const relPDF = toRel(pdfPath);
   const relHTML = repoRelativeManifestPath(htmlPath);
   const date = new Date().toISOString().slice(0, 10);
@@ -321,14 +328,15 @@ async function generatePDF() {
   inputPath = resolve(inputPath);
   outputPath = resolve(outputPath);
 
-  // Path-traversal guard: keep the PDF write inside the project directory so a
-  // crafted output argument (e.g. "../../etc/cron.d/x") can't escape the repo.
-  // Anchored to the repo root (__dirname), not process.cwd(): running the script
-  // from outside the repo used to falsely refuse in-repo outputs — and, worse,
+  // Path-traversal guard: keep the PDF write inside the user-data root so a
+  // crafted output argument (e.g. "../../etc/cron.d/x") can't escape it.
+  // Anchored to USER_ROOT (repo root by default, the per-user root when
+  // CAREER_OPS_USER_ROOT is set), not process.cwd(): running the script
+  // from outside the root used to falsely refuse in-root outputs — and, worse,
   // would have allowed writes anywhere under an arbitrary cwd.
-  const relOut = relative(__dirname, outputPath);
+  const relOut = relative(USER_ROOT, outputPath);
   if (relOut === '' || relOut.startsWith('..') || isAbsolute(relOut)) {
-    console.error(`Refusing to write the PDF outside the project directory: ${outputPath}`);
+    console.error(`Refusing to write the PDF outside the user data root: ${outputPath}`);
     process.exit(1);
   }
 
@@ -346,7 +354,7 @@ async function generatePDF() {
   let html = await readFile(inputPath, 'utf-8');
   let cvMarkdown = '';
   try {
-    cvMarkdown = await readFile(resolve(__dirname, 'cv.md'), 'utf-8');
+    cvMarkdown = await readFile(resolve(USER_ROOT, 'cv.md'), 'utf-8');
   } catch (err) {
     if (err?.code !== 'ENOENT') throw err;
   }

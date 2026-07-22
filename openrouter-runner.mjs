@@ -69,6 +69,12 @@ let modelIndex = 0;      // current position in rotation
 
 // Persistent blacklist file — survives process restarts
 const BLACKLIST_FILE = path.join(__dirname, 'data', 'model-blacklist.json');
+// Reports live in the user layer: honor the same override reserve-report-num.mjs
+// uses, so multi-user setups can point each person at their own reports/.
+const REPORTS_DIR = process.env.CAREER_OPS_REPORTS_DIR
+  || (process.env.CAREER_OPS_USER_ROOT
+    ? path.join(path.resolve(process.env.CAREER_OPS_USER_ROOT), 'reports')
+    : path.join(__dirname, 'reports'));
 function loadPersistedBlacklist() {
   try {
     const data = JSON.parse(fs.readFileSync(BLACKLIST_FILE, 'utf-8'));
@@ -507,7 +513,7 @@ function addToPipeline(entries) {
 // ---------------------------------------------------------------------------
 function nextReportNum() {
   try {
-    const nums = fs.readdirSync(path.join(__dirname, 'reports'))
+    const nums = fs.readdirSync(REPORTS_DIR)
       .map(f => parseInt(f.match(/^(\d+)/)?.[1] ?? '0', 10))
       .filter(n => n > 0);
     return nums.length ? Math.max(...nums) + 1 : 1;
@@ -681,14 +687,13 @@ async function cmdApply(ref, ctx) {
     reportContent = readFile(ref);
   } else {
     const numStr = String(ref).padStart(3, '0');
-    const reportsDir = path.join(__dirname, 'reports');
-    const dirEntries = fs.existsSync(reportsDir) ? fs.readdirSync(reportsDir) : [];
+    const dirEntries = fs.existsSync(REPORTS_DIR) ? fs.readdirSync(REPORTS_DIR) : [];
     const matches = dirEntries.filter(f => f.startsWith(numStr));
     if (matches.length === 0) {
       console.error(`Report not found: ${ref}`);
       return;
     }
-    reportContent = readFile(`reports/${matches[0]}`);
+    reportContent = readFile(path.join(REPORTS_DIR, matches[0]));
   }
 
   if (!reportContent) { console.error('Could not read report content.'); return; }

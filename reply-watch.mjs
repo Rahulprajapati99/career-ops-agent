@@ -20,9 +20,14 @@ import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
 import { rebuildRow } from './tracker-utils.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_CANDIDATES_PATH = path.join(__dirname, 'data', 'reply-candidates.json');
-const APPS_FILE = path.join(__dirname, 'data', 'applications.md');
-const FOLLOWUPS_FILE = path.join(__dirname, 'data', 'follow-ups.md');
+// User-data root: honors CAREER_OPS_USER_ROOT for multi-user setups (each
+// person's data/ lives in their own folder). Defaults to the repo root.
+const USER_ROOT = process.env.CAREER_OPS_USER_ROOT
+  ? path.resolve(process.env.CAREER_OPS_USER_ROOT)
+  : __dirname;
+const DEFAULT_CANDIDATES_PATH = path.join(USER_ROOT, 'data', 'reply-candidates.json');
+const APPS_FILE = path.join(USER_ROOT, 'data', 'applications.md');
+const FOLLOWUPS_FILE = path.join(USER_ROOT, 'data', 'follow-ups.md');
 
 // Helper to ask a question in the CLI
 function askQuestion(query) {
