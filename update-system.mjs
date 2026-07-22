@@ -336,6 +336,8 @@ const USER_PATHS = [
   // extractArrayFromSource() treats any quote as a string delimiter.
   'telegram-bot.mjs',
   'gemini-tailor.mjs',
+  'gemini-cover.mjs',
+  'cv-import.mjs',
   'user-env.mjs',
   'run-as-user.mjs',
   'scaffold-user.mjs',

@@ -1,22 +1,33 @@
 /**
- * telegram-bot.mjs
+ * telegram-bot.mjs — Family Edition multi-user Telegram bot.
  *
- * Full-pipeline Telegram Bot for career-ops-agent.
- * Listens for job URLs, evaluates JDs, offers resume tailoring (with user consent),
- * generates PDFs, tracks applications, and provides status queries.
+ * Serves up to N allowlisted family members, each with a fully isolated data
+ * root under users/<telegram_id>/ (see user-env.mjs / run-as-user.mjs). Every
+ * pipeline script runs with cwd + CAREER_OPS_* env bound to the requesting
+ * user's root, so evaluations, resumes, cover letters, and trackers never mix.
  *
  * Commands:
- *   (send URL)     — Extract JD, evaluate, offer tailoring
- *   /start         — Welcome message
- *   /help          — List available commands
- *   /status        — Show all tracked applications
- *   /status <co>   — Filter by company name
- *   /tailor        — Tailor resume from last evaluation (if not done via button)
- *   /cover <num>   — Generate cover letter for report #NNN
- *   /apply <url>   — ATS prefill cheat-sheet
- *   /scan          — Discover new matching jobs
+ *   (send URL)      — Extract JD, evaluate against YOUR cv, offer tailoring
+ *   (paste JD text) — Evaluate pasted job description (no URL needed)
+ *   (send file)     — Import a resume (.md/.txt/.pdf) as your cv.md
+ *   /start          — Welcome + onboarding status
+ *   /help           — List available commands
+ *   /whoami         — Your Telegram id + data root (for the allowlist)
+ *   /setcv          — Import/replace your resume (upload or paste)
+ *   /jobs           — Recent jobs in your pipeline
+ *   /scan           — Scan YOUR portals for new matching jobs
+ *   /status [co]    — Tracked applications (optionally filter by company)
+ *   /tailor         — Tailor resume from last evaluation
+ *   /cover          — Generate a cover-letter PDF for the last evaluation
+ *   /applykit       — Full apply kit: tailored CV + cover letter + prefill notes
+ *   /apply <url>    — ATS prefill cheat-sheet (never submits)
  *
- * Requires: npm install node-telegram-bot-api dotenv
+ * Env:
+ *   TELEGRAM_BOT_TOKEN    — bot token (required)
+ *   TELEGRAM_ALLOWED_IDS  — comma-separated Telegram user ids (required; the
+ *                           bot refuses everyone else and tells them their id)
+ *
+ * Requires: npm install (node-telegram-bot-api is a declared dependency)
  */
 
 import 'dotenv/config';
@@ -25,6 +36,8 @@ import { exec } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
+import { REPO_ROOT, userRootFor, buildUserEnv, isValidUserId } from './user-env.mjs';
+import { scaffoldUser } from './scaffold-user.mjs';
 
 const execAsync = promisify(exec);
 
@@ -37,606 +50,658 @@ if (!token) {
   process.exit(1);
 }
 
-const CWD = process.cwd();
-const REPORTS_DIR = path.join(CWD, 'reports');
-const OUTPUT_DIR = path.join(CWD, 'output');
-if (!fs.existsSync(REPORTS_DIR)) fs.mkdirSync(REPORTS_DIR, { recursive: true });
-if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
-
-const bot = new TelegramBot(token, { polling: true });
-
-console.log('🤖 Career-Ops Telegram Bot is online and listening...');
-
-// ---------------------------------------------------------------------------
-// Per-chat state (stores last evaluation context for tailor/cover/apply)
-// ---------------------------------------------------------------------------
-const chatState = new Map();
-
-// Maximum exec buffer (5MB) and timeouts
-const EXEC_OPTS = { maxBuffer: 1024 * 1024 * 5, cwd: CWD };
-const LONG_EXEC_OPTS = { ...EXEC_OPTS, timeout: 300_000 }; // 5 min for tailoring
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-const urlRegex = /(https?:\/\/[^\s]+)/g;
-
-function getLatestFile(dir, extension) {
-  if (!fs.existsSync(dir)) return null;
-  const files = fs.readdirSync(dir)
-    .filter(f => {
-      if (!fs.statSync(path.join(dir, f)).isFile()) return false;
-      return extension ? f.endsWith(extension) : true;
-    })
-    .map(f => ({ file: f, time: fs.statSync(path.join(dir, f)).mtime.getTime() }))
-    .sort((a, b) => b.time - a.time);
-  return files.length > 0 ? path.join(dir, files[0].file) : null;
+const ALLOWED_IDS = new Set(
+  (process.env.TELEGRAM_ALLOWED_IDS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+if (ALLOWED_IDS.size === 0) {
+  console.error('❌ TELEGRAM_ALLOWED_IDS missing in .env — add the family Telegram ids, comma-separated');
+  process.exit(1);
 }
 
-function escapeMarkdown(text) {
-  // Escape Telegram MarkdownV2 special chars (but not inside code blocks)
-  return text.replace(/([_*\[\]()~`>#+\-=|{}.!\\])/g, '\\$1');
+const bot = new TelegramBot(token, { polling: true });
+console.log(`🤖 Career-Ops Family Bot online — serving ${ALLOWED_IDS.size} allowlisted user(s).`);
+
+// ---------------------------------------------------------------------------
+// Per-user routing — every script runs inside users/<id>/
+// ---------------------------------------------------------------------------
+/** Quote a filesystem path for a shell command line. */
+const q = (p) => `"${p}"`;
+/** Absolute path of a system script (repo root), quoted for exec. */
+const script = (name) => q(path.join(REPO_ROOT, name));
+
+/**
+ * Resolve (and lazily scaffold) the calling user's isolated context.
+ * @returns {{ root: string, opts: object, longOpts: object }}
+ */
+function userCtx(chatId) {
+  const id = String(chatId);
+  if (!isValidUserId(id)) throw new Error(`unroutable chat id: ${chatId}`);
+  const root = userRootFor(id);
+  if (!fs.existsSync(root)) {
+    scaffoldUser(id);
+    console.log(`👤 Scaffolded new user root: ${root}`);
+  }
+  const env = { ...process.env, ...buildUserEnv(root) };
+  const opts = { maxBuffer: 1024 * 1024 * 5, cwd: root, env };
+  return { root, opts, longOpts: { ...opts, timeout: 300_000 } };
+}
+
+/** True when the user's cv.md is still the scaffold placeholder. */
+function cvIsPlaceholder(root) {
+  const cvPath = path.join(root, 'cv.md');
+  if (!fs.existsSync(cvPath)) return true;
+  const cv = fs.readFileSync(cvPath, 'utf-8');
+  return cv.length < 300 || cv.includes('Placeholder created by scaffold-user.mjs');
+}
+
+// ---------------------------------------------------------------------------
+// Per-chat state (last evaluation context; onboarding mode)
+// ---------------------------------------------------------------------------
+const chatState = new Map();
+const urlRegex = /(https?:\/\/[^\s]+)/g;
+
+function getLatestFile(dir, suffix) {
+  if (!fs.existsSync(dir)) return null;
+  const files = fs.readdirSync(dir)
+    .filter((f) => {
+      if (!fs.statSync(path.join(dir, f)).isFile()) return false;
+      return suffix ? f.endsWith(suffix) : true;
+    })
+    .map((f) => ({ file: f, time: fs.statSync(path.join(dir, f)).mtime.getTime() }))
+    .sort((a, b) => b.time - a.time);
+  return files.length > 0 ? path.join(dir, files[0].file) : null;
 }
 
 function parseScoreSummary(stdout) {
   const match = stdout.match(/---SCORE_SUMMARY---\s*([\s\S]*?)---END_SUMMARY---/);
   if (!match) return null;
-
   const block = match[1];
   const extract = (key) => {
-    const line = block.split('\n').find(l => l.trimStart().startsWith(`${key}:`));
+    const line = block.split('\n').find((l) => l.trimStart().startsWith(`${key}:`));
     return line ? line.split(':').slice(1).join(':').trim() : 'unknown';
   };
-
   return {
-    company:    extract('COMPANY'),
-    role:       extract('ROLE'),
-    score:      parseFloat(extract('SCORE')) || 0,
-    archetype:  extract('ARCHETYPE'),
+    company: extract('COMPANY'),
+    role: extract('ROLE'),
+    score: parseFloat(extract('SCORE')) || 0,
+    archetype: extract('ARCHETYPE'),
     legitimacy: extract('LEGITIMACY'),
-    raw:        match[0],
   };
 }
 
-function parseReportPath(stdout) {
-  const match = stdout.match(/Report saved:\s*(.+\.md)/);
+const parseMarker = (stdout, marker) => {
+  const match = stdout.match(new RegExp(`${marker}:\\s*(.+)`));
   return match ? match[1].trim() : null;
-}
+};
 
-function parseTailorHtmlPath(stdout) {
-  const match = stdout.match(/HTML_PATH:\s*(.+)/);
-  return match ? match[1].trim() : null;
+function friendlyError(errMsg) {
+  if (/429|quota|rate|QUOTA_EXHAUSTED/i.test(errMsg)) {
+    return '⚠️ *Rate limit hit* — the free Gemini quota is temporarily exhausted. Wait ~60s and retry (daily cap resets tomorrow).';
+  }
+  if (/browser-extract|playwright|Navigation/i.test(errMsg)) {
+    return '❌ *Could not extract the job description* — the page may need login or block bots. Copy the JD text and paste it here instead.';
+  }
+  return '❌ *Something went wrong.* Please retry in a moment; if it persists, check the bot logs.';
 }
 
 // ---------------------------------------------------------------------------
-// URL handler — Extract JD, evaluate, offer tailoring
+// Evaluation — from a URL or pasted JD text
 // ---------------------------------------------------------------------------
-async function handleUrl(chatId, url) {
-  const jdFile = path.join(CWD, `temp_jd_${chatId}.txt`);
+async function evaluateJd(chatId, { url = null, pastedText = null }) {
+  const { root, longOpts } = userCtx(chatId);
 
-  await bot.sendMessage(chatId,
-    `⏳ Received URL. Extracting job description...\n🔗 ${url}`
-  );
+  if (cvIsPlaceholder(root)) {
+    await bot.sendMessage(chatId,
+      '👋 Before I can evaluate jobs for you, I need your resume.\n\n' +
+      'Send it now as a *.pdf*, *.md*, or *.txt* file — or type /setcv and paste the text.',
+      { parse_mode: 'Markdown' });
+    return;
+  }
 
+  const jdFile = path.join(root, 'data', 'temp_jd.txt');
   try {
-    // Step 1: Extract JD
-    await execAsync(`node browser-extract.mjs "${url}" > "${jdFile}"`, LONG_EXEC_OPTS);
-    await bot.sendMessage(chatId, '✅ Extracted successfully. Now evaluating against your CV...');
+    if (url) {
+      await bot.sendMessage(chatId, `⏳ Extracting job description...\n🔗 ${url}`);
+      await execAsync(`${script('browser-extract.mjs')} "${url}" > ${q(jdFile)}`, longOpts);
+    } else {
+      fs.writeFileSync(jdFile, pastedText);
+      await bot.sendMessage(chatId, '⏳ Got the pasted job description.');
+    }
+    await bot.sendMessage(chatId, '✅ Evaluating against your CV...');
 
-    // Step 2: Evaluate
     const { stdout: evalOutput } = await execAsync(
-      `node gemini-eval.mjs --file "${jdFile}"`,
-      LONG_EXEC_OPTS
+      `${script('gemini-eval.mjs')} --file ${q(jdFile)}`,
+      longOpts,
     );
 
-    // Step 3: Parse results
     const summary = parseScoreSummary(evalOutput);
-    const reportRelPath = parseReportPath(evalOutput);
-    const reportFullPath = reportRelPath
-      ? path.join(CWD, reportRelPath)
-      : getLatestFile(REPORTS_DIR, '.md');
+    const reportRel = evalOutput.match(/Report saved:\s*(.+\.md)/)?.[1]?.trim() || null;
+    const reportPath = reportRel
+      ? path.resolve(root, reportRel)
+      : getLatestFile(path.join(root, 'reports'), '.md');
 
     if (!summary) {
-      await bot.sendMessage(chatId, '⚠️ Evaluation complete but could not parse summary. Check server logs.');
+      await bot.sendMessage(chatId, '⚠️ Evaluation finished but the summary could not be parsed. Check the bot logs.');
       return;
     }
 
-    // Store state for this chat
     chatState.set(chatId, {
-      jdFile,
-      reportPath: reportFullPath,
-      company: summary.company,
-      role: summary.role,
-      score: summary.score,
-      archetype: summary.archetype,
-      legitimacy: summary.legitimacy,
-      tailored: false,
-      timestamp: Date.now(),
+      jdFile, reportPath, url,
+      company: summary.company, role: summary.role, score: summary.score,
+      tailored: false, pdfPath: null, coverPdf: null, timestamp: Date.now(),
     });
 
-    // Step 4: Build reply with inline keyboard
     const scoreEmoji = summary.score >= 4 ? '🟢' : summary.score >= 3 ? '🟡' : '🔴';
     let replyText =
-      `🎯 *Evaluation Complete* 🎯\n\n` +
+      `🎯 *Evaluation Complete*\n\n` +
       `🏢 *Company:* ${summary.company}\n` +
       `💼 *Role:* ${summary.role}\n` +
       `${scoreEmoji} *Score:* ${summary.score}/5\n` +
       `🎭 *Archetype:* ${summary.archetype}\n` +
       `🔒 *Legitimacy:* ${summary.legitimacy}\n\n` +
-      `📊 Report saved & application tracked.`;
+      `📊 Report saved & tracked.`;
+    replyText += summary.score >= 3.5
+      ? `\n\n✨ *High match!* Tailor your resume for this role?`
+      : `\n\n📉 Low match score — tailor anyway?`;
 
-    // Inline keyboard — always ask before tailoring
-    const keyboard = { reply_markup: { inline_keyboard: [] } };
-
-    if (summary.score >= 3.5) {
-      replyText += `\n\n✨ *High match detected!* Would you like me to tailor your resume for this role?`;
-      keyboard.reply_markup.inline_keyboard.push([
-        { text: '📄 Yes, Tailor My Resume', callback_data: 'tailor_yes' },
-        { text: '❌ Skip', callback_data: 'tailor_skip' },
-      ]);
-    } else {
-      replyText += `\n\n📉 Low match score. Filtered out.`;
-      keyboard.reply_markup.inline_keyboard.push([
-        { text: '📄 Tailor Anyway', callback_data: 'tailor_yes' },
-        { text: '❌ Skip', callback_data: 'tailor_skip' },
-      ]);
-    }
-
-    await bot.sendMessage(chatId, replyText, { parse_mode: 'Markdown', ...keyboard });
-
+    await bot.sendMessage(chatId, replyText, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [[
+          { text: '📄 Tailor My Resume', callback_data: 'tailor_yes' },
+          { text: '❌ Skip', callback_data: 'tailor_skip' },
+        ]],
+      },
+    });
   } catch (error) {
-    console.error(error);
-    const errMsg = error.message || '';
-
-    if (errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('rate') || errMsg.includes('QUOTA_EXHAUSTED')) {
-      await bot.sendMessage(chatId,
-        `⚠️ *Rate Limit Hit*\n\n` +
-        `The Gemini API free-tier quota is temporarily exhausted.\n\n` +
-        `*What to do:*\n` +
-        `• Wait ~60 seconds and resend the URL\n` +
-        `• If this keeps happening, the daily quota may be used up (resets tomorrow)\n` +
-        `• Consider upgrading to a paid API key for higher limits`,
-        { parse_mode: 'Markdown' }
-      );
-    } else if (errMsg.includes('browser-extract') || errMsg.includes('playwright') || errMsg.includes('Navigation')) {
-      await bot.sendMessage(chatId,
-        `❌ *Could not extract job description*\n\n` +
-        `The page might require login, be behind a paywall, or have unusual formatting.\n` +
-        `Try copying the JD text directly and sending it as a message instead.`,
-        { parse_mode: 'Markdown' }
-      );
-    } else {
-      await bot.sendMessage(chatId,
-        `❌ *Error during processing*\n\n` +
-        `Something went wrong. Please try again in a moment.\n` +
-        `_If this persists, check the bot logs for details._`,
-        { parse_mode: 'Markdown' }
-      );
-    }
+    console.error(`[${chatId}] evaluate error:`, error);
+    await bot.sendMessage(chatId, friendlyError(error.message || ''), { parse_mode: 'Markdown' });
   }
 }
 
 // ---------------------------------------------------------------------------
-// Tailor handler — Generate tailored CV + PDF
+// Tailor — tailored CV + PDF (per-user)
 // ---------------------------------------------------------------------------
 async function handleTailor(chatId) {
+  const { longOpts } = userCtx(chatId);
   const state = chatState.get(chatId);
 
-  if (!state || !state.jdFile || !state.reportPath) {
-    await bot.sendMessage(chatId, '❌ No recent evaluation found. Send a job URL first.');
+  if (!state?.jdFile || !state?.reportPath) {
+    await bot.sendMessage(chatId, '❌ No recent evaluation. Send a job URL (or paste a JD) first.');
     return;
   }
-
-  if (state.tailored) {
-    await bot.sendMessage(chatId, '✅ Resume was already tailored for this evaluation. Send a new URL to evaluate another job.');
+  if (state.tailored && state.pdfPath) {
+    await bot.sendMessage(chatId, '✅ Already tailored for this evaluation — /cover or /applykit are the next steps.');
     return;
   }
-
-  if (!fs.existsSync(state.jdFile)) {
-    await bot.sendMessage(chatId, '❌ JD file no longer available. Please resend the job URL.');
-    return;
-  }
-
-  if (!fs.existsSync(state.reportPath)) {
-    await bot.sendMessage(chatId, '❌ Report file not found. Please resend the job URL.');
+  if (!fs.existsSync(state.jdFile) || !fs.existsSync(state.reportPath)) {
+    await bot.sendMessage(chatId, '❌ Evaluation files no longer available. Please resend the job URL.');
     return;
   }
 
   await bot.sendMessage(chatId,
-    `⏳ Tailoring your resume for *${state.company}* — *${state.role}*...\n` +
-    `This may take 30-90 seconds.`,
-    { parse_mode: 'Markdown' }
-  );
+    `⏳ Tailoring your resume for *${state.company}* — *${state.role}*... (30–90s)`,
+    { parse_mode: 'Markdown' });
 
   try {
-    // Step 1: Tailor the CV using Gemini
-    const { stdout: tailorOutput } = await execAsync(
-      `node gemini-tailor.mjs --jd "${state.jdFile}" --report "${state.reportPath}"`,
-      LONG_EXEC_OPTS
+    const { stdout } = await execAsync(
+      `${script('gemini-tailor.mjs')} --jd ${q(state.jdFile)} --report ${q(state.reportPath)}`,
+      longOpts,
     );
-
-    const htmlPath = parseTailorHtmlPath(tailorOutput);
+    const htmlPath = parseMarker(stdout, 'HTML_PATH');
     if (!htmlPath || !fs.existsSync(htmlPath)) {
-      await bot.sendMessage(chatId, '❌ Tailoring completed but could not find the output HTML file.');
+      await bot.sendMessage(chatId, '❌ Tailoring finished but the output HTML was not found.');
       return;
     }
 
     await bot.sendMessage(chatId, '✅ CV tailored. Generating PDF...');
-
-    // Step 2: Generate PDF from tailored HTML
     const pdfPath = htmlPath.replace(/\.html$/, '.pdf');
-    await execAsync(
-      `node generate-pdf.mjs "${htmlPath}" "${pdfPath}"`,
-      LONG_EXEC_OPTS
-    );
+    await execAsync(`${script('generate-pdf.mjs')} ${q(htmlPath)} ${q(pdfPath)}`, longOpts);
 
-    if (!fs.existsSync(pdfPath)) {
-      // If PDF generation failed, send the HTML file as fallback
-      await bot.sendMessage(chatId, '⚠️ PDF generation failed. Sending HTML version instead.');
-      await bot.sendDocument(chatId, htmlPath, {
-        caption: `📄 Tailored CV for ${state.company} — ${state.role}`,
-      });
-    } else {
-      // Send the PDF
+    if (fs.existsSync(pdfPath)) {
       await bot.sendDocument(chatId, pdfPath, {
-        caption: `📄 Tailored CV for ${state.company} — ${state.role} (Score: ${state.score}/5)`,
+        caption: `📄 Tailored CV — ${state.company} · ${state.role} (score ${state.score}/5)`,
       });
+      state.pdfPath = pdfPath;
+    } else {
+      await bot.sendMessage(chatId, '⚠️ PDF generation failed — sending the HTML instead.');
+      await bot.sendDocument(chatId, htmlPath, { caption: `📄 Tailored CV (HTML) — ${state.company}` });
     }
-
-    // Mark as tailored
     state.tailored = true;
-    state.pdfPath = fs.existsSync(pdfPath) ? pdfPath : null;
     state.htmlPath = htmlPath;
     chatState.set(chatId, state);
 
     await bot.sendMessage(chatId,
-      `✅ *Resume tailored and delivered!*\n\n` +
-      `Next steps:\n` +
-      `• /cover — Generate a cover letter\n` +
-      `• /apply <url> — Get ATS prefill guide\n` +
-      `• /status — View all tracked applications`,
-      { parse_mode: 'Markdown' }
-    );
-
+      `✅ *Done!* Next steps:\n• /cover — cover-letter PDF\n• /applykit — full apply kit\n• /status — your tracker`,
+      { parse_mode: 'Markdown' });
   } catch (error) {
-    console.error('Tailor error:', error);
-    const errMsg = error.message || '';
-
-    if (errMsg.includes('429') || errMsg.includes('quota') || errMsg.includes('QUOTA_EXHAUSTED')) {
-      await bot.sendMessage(chatId,
-        `⚠️ *Rate Limit Hit during tailoring*\n\n` +
-        `The Gemini API quota is temporarily exhausted.\n` +
-        `Wait a moment and type /tailor to retry.`,
-        { parse_mode: 'Markdown' }
-      );
-    } else {
-      await bot.sendMessage(chatId,
-        `❌ *Tailoring failed*\n\n` +
-        `Something went wrong. Type /tailor to retry.\n` +
-        `_If this persists, check the bot logs._`,
-        { parse_mode: 'Markdown' }
-      );
-    }
+    console.error(`[${chatId}] tailor error:`, error);
+    await bot.sendMessage(chatId, friendlyError(error.message || ''), { parse_mode: 'Markdown' });
   }
 }
 
 // ---------------------------------------------------------------------------
-// Command handlers
+// Cover letter — Gemini payload → rendered PDF (per-user)
+// ---------------------------------------------------------------------------
+async function handleCover(chatId, { silent = false } = {}) {
+  const { longOpts } = userCtx(chatId);
+  const state = chatState.get(chatId);
+
+  if (!state?.reportPath || !fs.existsSync(state.reportPath)) {
+    if (!silent) await bot.sendMessage(chatId, '❌ No recent evaluation. Send a job URL first, then /cover.');
+    return null;
+  }
+  if (state.coverPdf && fs.existsSync(state.coverPdf)) return state.coverPdf;
+
+  if (!silent) {
+    await bot.sendMessage(chatId,
+      `⏳ Writing a cover letter for *${state.company}* — *${state.role}*... (30–60s)`,
+      { parse_mode: 'Markdown' });
+  }
+
+  try {
+    const jdArg = state.jdFile && fs.existsSync(state.jdFile) ? ` --jd ${q(state.jdFile)}` : '';
+    const { stdout } = await execAsync(
+      `${script('gemini-cover.mjs')} --report ${q(state.reportPath)}${jdArg}`,
+      longOpts,
+    );
+    const coverPdf = parseMarker(stdout, 'COVER_PDF_PATH');
+    if (!coverPdf || !fs.existsSync(coverPdf)) {
+      if (!silent) await bot.sendMessage(chatId, '❌ Cover letter generation failed — check the bot logs.');
+      return null;
+    }
+    state.coverPdf = coverPdf;
+    chatState.set(chatId, state);
+    if (!silent) {
+      await bot.sendDocument(chatId, coverPdf, {
+        caption: `✉️ Cover letter — ${state.company} · ${state.role}`,
+      });
+    }
+    return coverPdf;
+  } catch (error) {
+    console.error(`[${chatId}] cover error:`, error);
+    if (!silent) await bot.sendMessage(chatId, friendlyError(error.message || ''), { parse_mode: 'Markdown' });
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Apply kit — tailored CV + cover letter + prefill notes, delivered together
+// ---------------------------------------------------------------------------
+async function handleApplyKit(chatId) {
+  const { opts } = userCtx(chatId);
+  const state = chatState.get(chatId);
+
+  if (!state?.reportPath) {
+    await bot.sendMessage(chatId, '❌ No recent evaluation. Flow: send URL → /tailor → /applykit.');
+    return;
+  }
+  if (!state.tailored || !state.pdfPath || !fs.existsSync(state.pdfPath)) {
+    await bot.sendMessage(chatId, '📄 Your CV is not tailored yet — running /tailor first, then send /applykit again.');
+    return handleTailor(chatId);
+  }
+
+  await bot.sendMessage(chatId, `📦 Assembling your apply kit for *${state.company}*...`, { parse_mode: 'Markdown' });
+
+  // 1) Tailored CV (already exists)
+  await bot.sendDocument(chatId, state.pdfPath, { caption: `1/3 📄 Tailored CV — ${state.company}` });
+
+  // 2) Cover letter (generate if missing)
+  const coverPdf = await handleCover(chatId, { silent: true });
+  if (coverPdf) {
+    await bot.sendDocument(chatId, coverPdf, { caption: `2/3 ✉️ Cover letter — ${state.company}` });
+  } else {
+    await bot.sendMessage(chatId, '2/3 ⚠️ Cover letter could not be generated (retry with /cover).');
+  }
+
+  // 3) ATS prefill notes (when the original application URL is known)
+  if (state.url) {
+    try {
+      const { stdout } = await execAsync(
+        `${script('prepare-application.mjs')} --url "${state.url}" --pdf ${q(state.pdfPath)}`,
+        opts,
+      );
+      const notes = stdout.trim();
+      if (notes) {
+        await bot.sendMessage(chatId,
+          `3/3 📋 *ATS prefill notes:*\n\n\`\`\`\n${notes.slice(0, 3300)}\n\`\`\``,
+          { parse_mode: 'Markdown' });
+      } else {
+        await bot.sendMessage(chatId, '3/3 ℹ️ No prefill notes available for this ATS.');
+      }
+    } catch {
+      await bot.sendMessage(chatId, '3/3 ℹ️ Prefill notes unavailable for this URL (supported: Greenhouse, Ashby, Lever).');
+    }
+  } else {
+    await bot.sendMessage(chatId, '3/3 ℹ️ No application URL on file (JD was pasted) — no prefill notes.');
+  }
+
+  await bot.sendMessage(chatId,
+    '✅ *Apply kit delivered.* Review everything, then apply on the site yourself — I never submit for you. 🚦',
+    { parse_mode: 'Markdown' });
+}
+
+// ---------------------------------------------------------------------------
+// CV import — document upload or pasted text
+// ---------------------------------------------------------------------------
+async function handleDocument(chatId, doc) {
+  const { root, longOpts } = userCtx(chatId);
+  const name = doc.file_name || 'upload';
+  const ext = path.extname(name).toLowerCase();
+
+  if (!['.pdf', '.md', '.txt'].includes(ext)) {
+    await bot.sendMessage(chatId, `❌ "${ext}" is not supported for resume import — send .pdf, .md, or .txt (export DOCX to PDF first).`);
+    return;
+  }
+  if ((doc.file_size || 0) > 10 * 1024 * 1024) {
+    await bot.sendMessage(chatId, '❌ File too large (max 10 MB).');
+    return;
+  }
+
+  await bot.sendMessage(chatId, `⏳ Importing "${name}" as your resume...`);
+  try {
+    const downloadDir = path.join(root, 'data', 'cv-uploads');
+    fs.mkdirSync(downloadDir, { recursive: true });
+    const downloaded = await bot.downloadFile(doc.file_id, downloadDir);
+
+    const { stdout } = await execAsync(`${script('cv-import.mjs')} --file ${q(downloaded)}`, longOpts);
+    const cvPath = parseMarker(stdout, 'CV_PATH');
+    if (cvPath && fs.existsSync(cvPath)) {
+      const size = fs.readFileSync(cvPath, 'utf-8').length;
+      await bot.sendMessage(chatId,
+        `✅ *Resume imported!* (${size} chars)\n\nYou're all set — send me any job URL and I'll evaluate it against your CV.`,
+        { parse_mode: 'Markdown' });
+    } else {
+      await bot.sendMessage(chatId, '❌ Import failed — try a different format, or /setcv to paste the text.');
+    }
+  } catch (error) {
+    console.error(`[${chatId}] cv import error:`, error);
+    await bot.sendMessage(chatId, friendlyError(error.message || ''), { parse_mode: 'Markdown' });
+  }
+}
+
+async function handleCvPaste(chatId, text) {
+  const { root } = userCtx(chatId);
+  if (text.length < 300) {
+    await bot.sendMessage(chatId, '❌ That looks too short for a resume. Paste the full text (or upload a file).');
+    return;
+  }
+  fs.writeFileSync(path.join(root, 'cv.md'), text.trim() + '\n');
+  const state = chatState.get(chatId) || {};
+  delete state.awaitingCv;
+  chatState.set(chatId, state);
+  await bot.sendMessage(chatId,
+    `✅ *Resume saved!* (${text.length} chars)\n\nSend me any job URL and I'll evaluate it against your CV.`,
+    { parse_mode: 'Markdown' });
+}
+
+// ---------------------------------------------------------------------------
+// Jobs, scan, status
+// ---------------------------------------------------------------------------
+async function handleJobs(chatId) {
+  const { root } = userCtx(chatId);
+  const pipelinePath = path.join(root, 'data', 'pipeline.md');
+  if (!fs.existsSync(pipelinePath)) {
+    await bot.sendMessage(chatId, '📭 Your pipeline is empty — run /scan to discover jobs, or send me a URL.');
+    return;
+  }
+  const rows = fs.readFileSync(pipelinePath, 'utf-8')
+    .split('\n')
+    .filter((l) => l.trim().startsWith('- [ ]'));
+  if (rows.length === 0) {
+    await bot.sendMessage(chatId, '📭 No pending jobs in your pipeline — run /scan to discover new ones.');
+    return;
+  }
+  let msg = `🗂 *Your pipeline — ${rows.length} pending job(s):*\n\n`;
+  for (const row of rows.slice(-12).reverse()) {
+    const parts = row.replace(/^- \[ \]\s*/, '').split('|').map((s) => s.trim());
+    const [url, company, title, location] = parts;
+    msg += `🏢 *${company || '?'}* — ${title || '?'}\n`;
+    if (location) msg += `   📍 ${location}\n`;
+    if (url) msg += `   ${url}\n`;
+    msg += '\n';
+  }
+  if (rows.length > 12) msg += `_...and ${rows.length - 12} more in data/pipeline.md_`;
+  await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown', disable_web_page_preview: true });
+}
+
+async function handleScan(chatId) {
+  const { opts } = userCtx(chatId);
+  await bot.sendMessage(chatId, '⏳ Scanning your portals for new matching jobs... (2–5 min)');
+  try {
+    const { stdout } = await execAsync(`${script('scan.mjs')}`, { ...opts, timeout: 600_000 });
+    const added = stdout.match(/(\d+)\s+new/i)?.[1];
+    const tail = stdout.trim().split('\n').slice(-25).join('\n');
+    await bot.sendMessage(chatId,
+      `🔍 *Scan complete.*${added ? ` ${added} new job(s) added.` : ''}\n\n\`\`\`\n${tail.slice(0, 3000)}\n\`\`\`\n\nUse /jobs to browse them.`,
+      { parse_mode: 'Markdown' });
+  } catch (error) {
+    console.error(`[${chatId}] scan error:`, error);
+    await bot.sendMessage(chatId, '❌ Scan failed — check portals.yml in your data root and the bot logs.');
+  }
+}
+
+async function handleStatus(chatId, companyFilter) {
+  const { opts, root } = userCtx(chatId);
+  try {
+    const cmd = companyFilter
+      ? `${script('tracker.mjs')} query --company "${companyFilter}" --json --limit 20`
+      : `${script('tracker.mjs')} query --json --limit 20`;
+    const { stdout } = await execAsync(cmd, opts);
+
+    let rows;
+    try { rows = JSON.parse(stdout); } catch { rows = null; }
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+      await bot.sendMessage(chatId,
+        companyFilter ? `📊 No applications found for "${companyFilter}".`
+          : '📊 Nothing tracked yet — send a job URL to get started!');
+      return;
+    }
+    let msg = companyFilter
+      ? `📊 *Applications — "${companyFilter}":*\n\n`
+      : `📊 *Recent applications (${rows.length}):*\n\n`;
+    for (const row of rows.slice(0, 15)) {
+      const scoreEmoji = (row.score || 0) >= 4 ? '🟢' : (row.score || 0) >= 3 ? '🟡' : '🔴';
+      msg += `${scoreEmoji} *${row.company || '?'}* — ${row.role || '?'}\n`;
+      msg += `   ${row.score || '?'}/5 · ${row.status || '?'} · ${row.date || ''}\n\n`;
+    }
+    if (rows.length > 15) msg += `_...and ${rows.length - 15} more_`;
+    await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+  } catch (error) {
+    // Tracker not synced — fall back to the raw file inside THIS user's root.
+    const trackerPath = path.join(root, 'data', 'applications.md');
+    if (fs.existsSync(trackerPath)) {
+      const lines = fs.readFileSync(trackerPath, 'utf-8')
+        .split('\n').filter((l) => l.startsWith('|') && !l.includes('---'));
+      if (lines.length > 1) {
+        const recent = lines.slice(Math.max(1, lines.length - 10)).join('\n');
+        await bot.sendMessage(chatId,
+          `📊 *Recent applications:*\n\n\`\`\`\n${recent.slice(0, 3300)}\n\`\`\``,
+          { parse_mode: 'Markdown' });
+        return;
+      }
+    }
+    await bot.sendMessage(chatId, '📊 Nothing tracked yet — send a job URL to get started!');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Apply (prefill cheat-sheet only — never submits)
+// ---------------------------------------------------------------------------
+async function handleApply(chatId, applyUrl) {
+  const { opts, root } = userCtx(chatId);
+  if (!applyUrl) {
+    await bot.sendMessage(chatId, '❌ Usage: /apply <application-url>');
+    return;
+  }
+  const state = chatState.get(chatId);
+  const pdfPath = state?.pdfPath || getLatestFile(path.join(root, 'output'), '.pdf');
+  if (!pdfPath || !fs.existsSync(pdfPath)) {
+    await bot.sendMessage(chatId, '⚠️ No tailored PDF found — /tailor first, then /apply.');
+    return;
+  }
+  await bot.sendMessage(chatId, '⏳ Generating ATS prefill cheat-sheet...');
+  try {
+    const { stdout } = await execAsync(
+      `${script('prepare-application.mjs')} --url "${applyUrl}" --pdf ${q(pdfPath)}`,
+      opts,
+    );
+    const output = stdout.trim();
+    if (output) {
+      await bot.sendMessage(chatId,
+        `📋 *ATS prefill guide:*\n\n\`\`\`\n${output.slice(0, 3300)}\n\`\`\``,
+        { parse_mode: 'Markdown' });
+    } else {
+      await bot.sendMessage(chatId, '⚠️ No prefill guide for this URL (supported: Greenhouse, Ashby, Lever).');
+    }
+  } catch {
+    await bot.sendMessage(chatId, '⚠️ Could not generate a prefill guide — make sure the URL is a direct application link.');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Onboarding & meta
 // ---------------------------------------------------------------------------
 async function handleStart(chatId) {
+  const { root } = userCtx(chatId);
+  const needsCv = cvIsPlaceholder(root);
   await bot.sendMessage(chatId,
-    `👋 *Welcome to Career-Ops Mobile Agent*\n\n` +
-    `I'm your AI-powered job search assistant. Here's what I can do:\n\n` +
-    `📋 *Paste any job URL* — I'll evaluate it against your profile\n` +
-    `📄 *Tailor your resume* — I'll customize your CV for the role\n` +
-    `📊 *Track applications* — I keep a record of every evaluation\n\n` +
-    `Type /help to see all available commands.`,
-    { parse_mode: 'Markdown' }
-  );
+    `👋 *Welcome to the Career-Ops Family Bot*\n\n` +
+    `Your private workspace is ready — nothing you do here is visible to other users.\n\n` +
+    (needsCv
+      ? `🪪 *First step:* send me your resume as a *.pdf*, *.md*, or *.txt* file (or /setcv to paste it). ` +
+        `Everything else — evaluating, tailoring, cover letters — builds on it.\n\n`
+      : `✅ Your resume is on file. Send any job URL to evaluate it!\n\n`) +
+    `Type /help for all commands.`,
+    { parse_mode: 'Markdown' });
 }
 
 async function handleHelp(chatId) {
   await bot.sendMessage(chatId,
-    `📖 *Available Commands*\n\n` +
-    `🔗 *Send a job URL* — Evaluate any job posting\n\n` +
-    `*Evaluation & Resume:*\n` +
-    `/tailor — Tailor resume from last evaluation\n` +
-    `/cover — Generate cover letter (last eval)\n` +
+    `📖 *Commands*\n\n` +
+    `🔗 Send a *job URL* — extract + evaluate against your CV\n` +
+    `📝 Paste a *JD text* — same, without a URL\n` +
+    `📎 Send a *file* — import resume (.pdf/.md/.txt)\n\n` +
+    `*Pipeline:*\n` +
+    `/jobs — pending jobs in your pipeline\n` +
+    `/scan — scan your portals for new jobs\n` +
+    `/status [company] — your tracked applications\n\n` +
+    `*Documents:*\n` +
+    `/tailor — tailor resume (last evaluation)\n` +
+    `/cover — cover-letter PDF\n` +
+    `/applykit — CV + cover letter + prefill notes\n` +
     `/apply <url> — ATS prefill cheat-sheet\n\n` +
-    `*Tracking & Discovery:*\n` +
-    `/status — View all tracked applications\n` +
-    `/status <company> — Filter by company\n` +
-    `/scan — Discover new matching jobs\n\n` +
-    `*General:*\n` +
-    `/help — Show this message\n` +
-    `/start — Welcome message`,
-    { parse_mode: 'Markdown' }
-  );
+    `*Setup:*\n` +
+    `/setcv — import/replace your resume\n` +
+    `/whoami — your id + data root\n\n` +
+    `_I prepare everything but never submit applications — you stay in control._`,
+    { parse_mode: 'Markdown' });
 }
 
-async function handleStatus(chatId, companyFilter) {
-  try {
-    const cmd = companyFilter
-      ? `node tracker.mjs query --company "${companyFilter}" --json --limit 20`
-      : `node tracker.mjs query --json --limit 20`;
-
-    const { stdout } = await execAsync(cmd, EXEC_OPTS);
-
-    // Try to parse JSON output
-    let rows;
-    try {
-      rows = JSON.parse(stdout);
-    } catch {
-      // If JSON parsing fails, just send raw output
-      const trimmed = stdout.trim();
-      if (!trimmed || trimmed === '[]') {
-        await bot.sendMessage(chatId, '📊 No tracked applications found yet. Send a job URL to get started!');
-      } else {
-        await bot.sendMessage(chatId, `📊 *Applications Tracker*\n\n\`\`\`\n${trimmed.slice(0, 3500)}\n\`\`\``, { parse_mode: 'Markdown' });
-      }
-      return;
-    }
-
-    if (!Array.isArray(rows) || rows.length === 0) {
-      await bot.sendMessage(chatId,
-        companyFilter
-          ? `📊 No applications found for "${companyFilter}".`
-          : '📊 No tracked applications found yet. Send a job URL to get started!'
-      );
-      return;
-    }
-
-    // Format as a readable list
-    let msg = companyFilter
-      ? `📊 *Applications for "${companyFilter}":*\n\n`
-      : `📊 *Recent Applications (${rows.length}):*\n\n`;
-
-    for (const row of rows.slice(0, 15)) { // cap at 15 to avoid Telegram message limit
-      const scoreEmoji = (row.score || 0) >= 4 ? '🟢' : (row.score || 0) >= 3 ? '🟡' : '🔴';
-      msg += `${scoreEmoji} *${row.company || '?'}* — ${row.role || '?'}\n`;
-      msg += `   Score: ${row.score || '?'}/5 | Status: ${row.status || '?'} | ${row.date || ''}\n\n`;
-    }
-
-    if (rows.length > 15) {
-      msg += `_...and ${rows.length - 15} more_\n`;
-    }
-
-    await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
-
-  } catch (error) {
-    console.error('Status error:', error);
-
-    // Tracker might not be synced yet — try a simpler approach
-    const trackerPath = path.join(CWD, 'data', 'applications.md');
-    if (fs.existsSync(trackerPath)) {
-      const content = fs.readFileSync(trackerPath, 'utf-8');
-      const lines = content.split('\n').filter(l => l.startsWith('|') && !l.includes('---'));
-      if (lines.length > 1) {
-        const recent = lines.slice(Math.max(1, lines.length - 10)).join('\n');
-        await bot.sendMessage(chatId,
-          `📊 *Recent Applications:*\n\n\`\`\`\n${recent.slice(0, 3500)}\n\`\`\``,
-          { parse_mode: 'Markdown' }
-        );
-        return;
-      }
-    }
-
-    await bot.sendMessage(chatId, '📊 No tracked applications found yet. Send a job URL to get started!');
-  }
-}
-
-async function handleCover(chatId) {
-  const state = chatState.get(chatId);
-
-  if (!state || !state.reportPath) {
-    await bot.sendMessage(chatId, '❌ No recent evaluation found. Send a job URL and evaluate it first.');
-    return;
-  }
-
+async function handleWhoami(chatId) {
+  const { root } = userCtx(chatId);
   await bot.sendMessage(chatId,
-    `⏳ Generating cover letter for *${state.company}* — *${state.role}*...\nThis may take 30-60 seconds.`,
-    { parse_mode: 'Markdown' }
-  );
-
-  try {
-    // Generate cover letter JSON payload using Gemini, then render
-    // For now, use a simplified approach: call gemini-tailor with cover-letter mode
-    const { stdout } = await execAsync(
-      `node generate-cover-letter.mjs --payload "${state.reportPath}"`,
-      LONG_EXEC_OPTS
-    );
-
-    // Look for generated PDF in output/
-    const coverPdf = getLatestFile(OUTPUT_DIR, '-cover.pdf');
-    if (coverPdf && fs.existsSync(coverPdf)) {
-      await bot.sendDocument(chatId, coverPdf, {
-        caption: `📄 Cover letter for ${state.company} — ${state.role}`,
-      });
-    } else {
-      await bot.sendMessage(chatId,
-        `⚠️ Cover letter generation is not fully configured yet.\n` +
-        `The cover letter script requires a JSON payload. ` +
-        `Use the CLI directly:\n\n` +
-        `\`node generate-cover-letter.mjs --payload cover.json\``,
-        { parse_mode: 'Markdown' }
-      );
-    }
-  } catch (error) {
-    console.error('Cover letter error:', error);
-    await bot.sendMessage(chatId,
-      `⚠️ Cover letter generation requires additional setup.\n` +
-      `Use the CLI directly:\n` +
-      `\`node generate-cover-letter.mjs --help\``,
-      { parse_mode: 'Markdown' }
-    );
-  }
-}
-
-async function handleApply(chatId, applyUrl) {
-  const state = chatState.get(chatId);
-
-  if (!applyUrl) {
-    await bot.sendMessage(chatId, '❌ Usage: /apply <application-url>\n\nExample: /apply https://boards.greenhouse.io/company/jobs/12345');
-    return;
-  }
-
-  const pdfPath = state?.pdfPath || getLatestFile(OUTPUT_DIR, '.pdf');
-
-  if (!pdfPath || !fs.existsSync(pdfPath)) {
-    await bot.sendMessage(chatId, '⚠️ No tailored PDF found. Tailor your resume first, then run /apply.');
-    return;
-  }
-
-  await bot.sendMessage(chatId, '⏳ Generating ATS prefill cheat-sheet...');
-
-  try {
-    const { stdout } = await execAsync(
-      `node prepare-application.mjs --url "${applyUrl}" --pdf "${pdfPath}"`,
-      EXEC_OPTS
-    );
-
-    const output = stdout.trim();
-    if (output) {
-      await bot.sendMessage(chatId,
-        `📋 *ATS Prefill Guide*\n\n\`\`\`\n${output.slice(0, 3500)}\n\`\`\``,
-        { parse_mode: 'Markdown' }
-      );
-    } else {
-      await bot.sendMessage(chatId, '⚠️ Could not generate prefill guide for this URL. The ATS might not be supported.');
-    }
-  } catch (error) {
-    console.error('Apply error:', error);
-    await bot.sendMessage(chatId,
-      `⚠️ Could not generate prefill guide.\n` +
-      `Supported ATS: Greenhouse, Ashby, Lever.\n` +
-      `Make sure the URL is a direct application link.`,
-      { parse_mode: 'Markdown' }
-    );
-  }
-}
-
-async function handleScan(chatId) {
-  await bot.sendMessage(chatId, '⏳ Scanning ATS portals for new matching jobs... This may take 2-5 minutes.');
-
-  try {
-    const { stdout } = await execAsync(
-      'node scan-ats-full.mjs --since 3 --json --limit 20',
-      { ...EXEC_OPTS, timeout: 600_000 } // 10 min timeout for scanning
-    );
-
-    let results;
-    try {
-      results = JSON.parse(stdout);
-    } catch {
-      const trimmed = stdout.trim();
-      if (trimmed) {
-        await bot.sendMessage(chatId, `🔍 *Scan Results:*\n\n${trimmed.slice(0, 3500)}`, { parse_mode: 'Markdown' });
-      } else {
-        await bot.sendMessage(chatId, '🔍 Scan complete. No new matching jobs found in the last 3 days.');
-      }
-      return;
-    }
-
-    if (!Array.isArray(results) || results.length === 0) {
-      await bot.sendMessage(chatId, '🔍 Scan complete. No new matching jobs found in the last 3 days.');
-      return;
-    }
-
-    let msg = `🔍 *Found ${results.length} new matching jobs:*\n\n`;
-    for (const job of results.slice(0, 10)) {
-      msg += `🏢 *${job.company || '?'}*\n`;
-      msg += `   ${job.title || job.role || '?'}\n`;
-      if (job.url) msg += `   🔗 ${job.url}\n`;
-      msg += '\n';
-    }
-
-    if (results.length > 10) {
-      msg += `_...and ${results.length - 10} more. Check data/pipeline.md for full results._`;
-    }
-
-    await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
-
-  } catch (error) {
-    console.error('Scan error:', error);
-    await bot.sendMessage(chatId,
-      '❌ Scan failed. Make sure `portals.yml` is configured and Playwright is installed.'
-    );
-  }
+    `🪪 *Your identity*\n\nTelegram id: \`${chatId}\`\nData root: \`users/${chatId}/\`\nCV on file: ${cvIsPlaceholder(root) ? '❌ not yet' : '✅ yes'}`,
+    { parse_mode: 'Markdown' });
 }
 
 // ---------------------------------------------------------------------------
-// Message router
+// Router — allowlist gate first, then commands
 // ---------------------------------------------------------------------------
+function isAllowed(msg) {
+  const fromId = String(msg.from?.id ?? '');
+  const chatId = String(msg.chat?.id ?? '');
+  // Private chats only, and the sender must be allowlisted.
+  return msg.chat?.type === 'private' && ALLOWED_IDS.has(fromId) && fromId === chatId;
+}
+
 bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
-  const text = (msg.text || '').trim();
 
-  // Ignore empty messages or non-text
-  if (!text) return;
-
-  // Route commands
-  if (text === '/start') return handleStart(chatId);
-  if (text === '/help') return handleHelp(chatId);
-  if (text === '/tailor') return handleTailor(chatId);
-  if (text === '/cover') return handleCover(chatId);
-  if (text === '/scan') return handleScan(chatId);
-
-  if (text.startsWith('/status')) {
-    const company = text.replace('/status', '').trim();
-    return handleStatus(chatId, company || null);
+  if (!isAllowed(msg)) {
+    if (msg.chat?.type === 'private') {
+      await bot.sendMessage(chatId,
+        `🔒 This is a private family bot. Your Telegram id is \`${msg.from?.id}\` — ` +
+        `ask the admin to add it to TELEGRAM_ALLOWED_IDS if you should have access.`,
+        { parse_mode: 'Markdown' });
+    }
+    return;
   }
 
-  if (text.startsWith('/apply')) {
-    const applyUrl = text.replace('/apply', '').trim();
-    return handleApply(chatId, applyUrl);
-  }
+  try {
+    // Resume uploads (documents) route to CV import.
+    if (msg.document) return await handleDocument(chatId, msg.document);
 
-  // Check for URLs
-  const links = text.match(urlRegex);
-  if (links && links.length > 0) {
-    return handleUrl(chatId, links[0]);
-  }
+    const text = (msg.text || '').trim();
+    if (!text) return;
 
-  // Unknown input — show help hint
-  if (text.startsWith('/')) {
-    await bot.sendMessage(chatId, '❓ Unknown command. Type /help to see available commands.');
+    if (text === '/start') return await handleStart(chatId);
+    if (text === '/help') return await handleHelp(chatId);
+    if (text === '/whoami') return await handleWhoami(chatId);
+    if (text === '/jobs') return await handleJobs(chatId);
+    if (text === '/scan') return await handleScan(chatId);
+    if (text === '/tailor') return await handleTailor(chatId);
+    if (text === '/cover') return await handleCover(chatId);
+    if (text === '/applykit') return await handleApplyKit(chatId);
+    if (text === '/setcv') {
+      const state = chatState.get(chatId) || {};
+      state.awaitingCv = true;
+      chatState.set(chatId, state);
+      return await bot.sendMessage(chatId,
+        '📎 Send your resume as a file (.pdf/.md/.txt), or paste the full text as your next message.');
+    }
+    if (text.startsWith('/status')) {
+      return await handleStatus(chatId, text.replace('/status', '').trim() || null);
+    }
+    if (text.startsWith('/apply')) {
+      return await handleApply(chatId, text.replace('/apply', '').trim());
+    }
+    if (text.startsWith('/')) {
+      return await bot.sendMessage(chatId, '❓ Unknown command — /help lists everything.');
+    }
+
+    // CV paste mode takes the next long message.
+    if (chatState.get(chatId)?.awaitingCv) return await handleCvPaste(chatId, text);
+
+    // URLs → evaluate.
+    const links = text.match(urlRegex);
+    if (links?.length) return await evaluateJd(chatId, { url: links[0] });
+
+    // Long plain text → treat as a pasted JD.
+    if (text.length > 400) return await evaluateJd(chatId, { pastedText: text });
+
+    await bot.sendMessage(chatId,
+      'ℹ️ Send a job URL, paste a full JD, or use /help to see what I can do.');
+  } catch (error) {
+    console.error(`[${chatId}] router error:`, error);
+    await bot.sendMessage(chatId, friendlyError(error.message || ''), { parse_mode: 'Markdown' });
   }
 });
 
 // ---------------------------------------------------------------------------
-// Callback query handler (inline keyboard buttons)
+// Inline keyboard callbacks
 // ---------------------------------------------------------------------------
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
-  const data = query.data;
-
-  // Acknowledge the button press immediately
+  const fromId = String(query.from?.id ?? '');
   await bot.answerCallbackQuery(query.id);
+  if (!ALLOWED_IDS.has(fromId)) return;
 
-  if (data === 'tailor_yes') {
-    // Remove the inline keyboard from the original message
-    try {
-      await bot.editMessageReplyMarkup(
-        { inline_keyboard: [] },
-        { chat_id: chatId, message_id: query.message.message_id }
-      );
-    } catch { /* ignore if message is too old to edit */ }
-
-    return handleTailor(chatId);
-
-  } else if (data === 'tailor_skip') {
-    // Remove the inline keyboard and confirm skip
-    try {
-      await bot.editMessageReplyMarkup(
-        { inline_keyboard: [] },
-        { chat_id: chatId, message_id: query.message.message_id }
-      );
-    } catch { /* ignore */ }
-
-    await bot.sendMessage(chatId,
-      '👍 Skipped. Your evaluation report is saved.\n\n' +
-      'You can always type /tailor later to generate a tailored resume.'
+  try {
+    await bot.editMessageReplyMarkup(
+      { inline_keyboard: [] },
+      { chat_id: chatId, message_id: query.message.message_id },
     );
+  } catch { /* message too old to edit */ }
+
+  if (query.data === 'tailor_yes') return handleTailor(chatId);
+  if (query.data === 'tailor_skip') {
+    await bot.sendMessage(chatId,
+      '👍 Skipped — the evaluation is saved. /tailor works any time before your next evaluation.');
   }
 });
 
@@ -646,7 +711,6 @@ bot.on('callback_query', async (query) => {
 bot.on('polling_error', (error) => {
   console.error('Polling error:', error.code, error.message);
 });
-
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection:', reason);
 });
