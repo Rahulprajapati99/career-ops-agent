@@ -37,9 +37,13 @@
 import { readFileSync, writeFileSync, copyFileSync, existsSync, mkdirSync, statSync, renameSync, rmSync } from 'fs';
 import { createHash } from 'crypto';
 import { dirname, resolve, join, basename } from 'path';
-import { pathToFileURL } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import yaml from 'js-yaml';
 import { resolveColumns } from './tracker-parse.mjs';
+
+// Script dir — system files (templates/) live here regardless of cwd, which
+// multi-user setups point at users/<id>/ (same anchoring as set-status.mjs).
+const CAREER_OPS = dirname(fileURLToPath(import.meta.url));
 
 const MD_PATH = process.env.CAREER_OPS_TRACKER || 'data/applications.md';
 const DB_PATH = process.env.CAREER_OPS_TRACKER_DB
@@ -51,7 +55,7 @@ if (resolve(MD_PATH) === resolve(DB_PATH)) {
   console.error(`Error: DB path must differ from the markdown path (${MD_PATH}).`);
   process.exit(1);
 }
-const STATES_PATH = 'templates/states.yml';
+const STATES_PATH = join(CAREER_OPS, 'templates', 'states.yml');
 const HEADER = '| # | Date | Company | Role | Score | Status | PDF | Report | Notes |';
 const SEPARATOR = '|---|------|---------|------|-------|--------|-----|--------|-------|';
 
