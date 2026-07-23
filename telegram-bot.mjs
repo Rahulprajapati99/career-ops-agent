@@ -73,8 +73,13 @@ console.log(`🤖 Career-Ops Family Bot online — serving ${ALLOWED_IDS.size} a
 // ---------------------------------------------------------------------------
 /** Quote a filesystem path for a shell command line. */
 const q = (p) => `"${p}"`;
-/** Absolute path of a system script (repo root), quoted for exec. */
-const script = (name) => q(path.join(REPO_ROOT, name));
+/**
+ * Command prefix to run a system script: node executable + absolute script
+ * path, both quoted. The explicit node prefix is load-bearing — a bare
+ * "script.mjs args" makes Windows cmd open the file via its file association
+ * (silent empty "success") and makes Linux sh fail on the missing exec bit.
+ */
+const script = (name) => `${q(process.execPath)} ${q(path.join(REPO_ROOT, name))}`;
 
 /**
  * Resolve (and lazily scaffold) the calling user's isolated context.
