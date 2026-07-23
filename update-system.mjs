@@ -342,6 +342,7 @@ const USER_PATHS = [
   'jd-fetch.mjs',
   'geo-policy.mjs',
   'find-contact-email.mjs',
+  'gemini-email.mjs',
   'user-env.mjs',
   'run-as-user.mjs',
   'scaffold-user.mjs',

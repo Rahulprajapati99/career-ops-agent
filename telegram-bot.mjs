@@ -775,6 +775,72 @@ async function handleApply(chatId, rawUrl) {
 }
 
 // ---------------------------------------------------------------------------
+// Contact — find a recruiter/hiring-manager email + draft outreach (never sends)
+// ---------------------------------------------------------------------------
+async function handleContact(chatId, argstr) {
+  const { opts, longOpts } = userCtx(chatId);
+  const state = chatState.get(chatId);
+  const raw = (argstr || '').trim();
+  if (!raw) {
+    await bot.sendMessage(chatId,
+      'Usage: /contact <Name> [at <company or domain>]\n' +
+      'e.g. /contact Jane Smith at netbrain.com\n' +
+      '(If you omit the company, I use the last job you evaluated.)');
+    return;
+  }
+  let name = raw;
+  let target = null;
+  const m = raw.match(/^(.*?)\s+(?:at|@)\s+(.+)$/i);
+  if (m) { name = m[1].trim(); target = m[2].trim(); } else { target = state?.company || null; }
+  if (!name) { await bot.sendMessage(chatId, 'Please give a name, e.g. /contact Jane Smith at company.com'); return; }
+  if (!target) {
+    await bot.sendMessage(chatId, `Which company? Try: /contact ${name} at company.com — or evaluate a job first so I know the company.`);
+    return;
+  }
+
+  await bot.sendMessage(chatId, `🔎 Finding a likely email for ${name} at ${target}...`);
+  try {
+    const isDomain = /\./.test(target) && !/\s/.test(target);
+    const targetArg = isDomain ? `--domain ${q(target)}` : `--company ${q(target)}`;
+    const { stdout } = await execAsync(`${script('find-contact-email.mjs')} --name ${q(name)} ${targetArg}`, opts);
+    const best = parseMarker(stdout, 'EMAIL_BEST');
+    const verified = parseMarker(stdout, 'EMAIL_VERIFIED') === 'yes';
+    const alts = (parseMarker(stdout, 'EMAIL_ALTS') || '').split(';').map((s) => s.trim()).filter(Boolean);
+
+    if (!best) { await bot.sendMessage(chatId, '❌ Could not derive an email — try /contact <Name> at <their-domain.com>.'); return; }
+    let msg = `📇 ${name} — ${target}\n\n${verified ? '✅ Verified' : '🔮 Best guess'}: ${best}`;
+    if (alts.length) msg += `\nAlternatives: ${alts.join('   ')}`;
+    msg += verified ? '' : '\n\n(Educated guess from the company\'s email pattern — confirm before sending. Add a free Hunter.io key to your profile to verify.)';
+    await bot.sendMessage(chatId, msg);
+
+    // Draft a tailored outreach email when a job is in context.
+    if (state?.reportPath && fs.existsSync(state.reportPath)) {
+      await bot.sendMessage(chatId, '✍️ Drafting a short outreach email...');
+      const jdArg = state.jdFile && fs.existsSync(state.jdFile) ? ` --jd ${q(state.jdFile)}` : '';
+      const { stdout: em } = await execAsync(
+        `${script('gemini-email.mjs')} --report ${q(state.reportPath)} --to-name ${q(name)}${jdArg}`,
+        longOpts,
+      );
+      const subject = parseMarker(em, 'EMAIL_SUBJECT');
+      const body = em.match(/EMAIL_BODY_START\n([\s\S]*?)\nEMAIL_BODY_END/)?.[1] || '';
+      if (subject && body) {
+        // Plain text on purpose — an LLM-written body would break Markdown parsing.
+        await bot.sendMessage(chatId,
+          `✉️ Draft outreach — review and send it yourself (I never send):\n\n` +
+          `To: ${best}\nSubject: ${subject}\n\n${body}`);
+      } else {
+        await bot.sendMessage(chatId, '(Could not draft the email body — use the address above with your own note.)');
+      }
+    } else {
+      await bot.sendMessage(chatId, 'Tip: evaluate a job first (send its URL), then /contact — I\'ll also draft a tailored outreach email for that role.');
+    }
+  } catch (error) {
+    console.error(`[${chatId}] contact error:`, error);
+    await bot.sendMessage(chatId, friendlyError(error));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Onboarding & meta
 // ---------------------------------------------------------------------------
 async function handleStart(chatId) {
@@ -803,7 +869,8 @@ async function handleHelp(chatId) {
     `/status [company] — your tracked applications\n\n` +
     `*Documents:*\n` +
     `/tailor — tailor resume (last evaluation)\n` +
-    `/cover — cover-letter PDF\n\n` +
+    `/cover — cover-letter PDF\n` +
+    `/contact <name> [at company] — find a contact's email + draft outreach\n\n` +
     `*Setup:*\n` +
     `/setcv — import/replace your resume\n` +
     `/whoami — your id + data root\n` +
@@ -911,6 +978,9 @@ bot.on('message', async (msg) => {
     }
     if (text.startsWith('/apply')) {
       return await handleApply(chatId, text.replace('/apply', '').trim());
+    }
+    if (text.startsWith('/contact')) {
+      return await handleContact(chatId, text.replace('/contact', '').trim());
     }
     if (text.startsWith('/')) {
       return await bot.sendMessage(chatId, '❓ Unknown command — /help lists everything.');
