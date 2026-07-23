@@ -107,6 +107,8 @@ ${cv.slice(0, 12000)}
     cand.email || '',
     cand.phone || '',
     cand.linkedin || '',
+    cand.github ? `GitHub: ${cand.github}` : '',
+    cand.portfolio_url ? `Portfolio: ${cand.portfolio_url}` : '',
   ].filter(Boolean);
   const fullBody = `${greeting}\n\n${out.body}\n\nBest regards,\n${sigLines.join('\n')}`;
 

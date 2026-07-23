@@ -67,6 +67,14 @@ export function extractCandidateBasics(markdown) {
   const linkedin = text.match(/linkedin\.com\/in\/[A-Za-z0-9\-_%.]+/i);
   if (linkedin) out.linkedin = linkedin[0].replace(/[.,;)]+$/, '');
 
+  const github = text.match(/github\.com\/[A-Za-z0-9-]+/i);
+  if (github) out.github = github[0].replace(/[.,;)]+$/, '');
+
+  // Portfolio: clear personal-site hosts (deliberately narrow to avoid false
+  // positives; covers the common dev-portfolio hosts).
+  const portfolio = text.match(/(?:https?:\/\/)?([a-z0-9-]+\.(?:vercel\.app|netlify\.app|github\.io|pages\.dev|web\.app))/i);
+  if (portfolio) out.portfolio_url = portfolio[1];
+
   const phone = text.match(/(?:\+\d{1,3}[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b/);
   if (phone) out.phone = phone[0].trim();
 
@@ -76,7 +84,8 @@ export function extractCandidateBasics(markdown) {
 /** Example values shipped in config/profile.example.yml — safe to overwrite. */
 const PLACEHOLDERS = new Set([
   'jane smith', 'jane@example.com', '+1-555-0123',
-  'linkedin.com/in/janesmith', 'san francisco, ca', '',
+  'linkedin.com/in/janesmith', 'github.com/janesmith', 'https://janesmith.dev',
+  'san francisco, ca', '',
 ]);
 
 /**
@@ -105,6 +114,7 @@ export function syncProfileFromCv(markdown, profilePath) {
   // fake link/city never leaks into generated documents.
   const blankIfPlaceholder = {
     portfolio_url: 'https://janesmith.dev',
+    github: 'github.com/janesmith',
     location: 'san francisco, ca',
   };
   for (const [key, placeholder] of Object.entries(blankIfPlaceholder)) {
