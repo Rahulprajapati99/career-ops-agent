@@ -25,8 +25,12 @@ npm install                      # picks up node-telegram-bot-api + lockfile
 
 ## 2. Environment (.env)
 
-Append the Family Edition variables to the existing `.env` (keep your current
-`TELEGRAM_BOT_TOKEN` and `GEMINI_API_KEY` lines as they are):
+⚠️ **The VM's existing `TELEGRAM_BOT_TOKEN` and `GEMINI_API_KEY` are both
+STALE (2026-07-23)** — the bot token was revoked via BotFather and the Gemini
+key was rotated. **Replace both lines** with the current values from the PC's
+`career-ops-agent/.env` before starting the bot; the old values will fail.
+
+Then append the Family Edition variables to `.env`:
 
 ```bash
 cat >> .env <<'EOF'
@@ -36,6 +40,9 @@ ADZUNA_APP_KEY=REDACTED_ADZUNA_APP_KEY_ROTATED
 # ADZUNA_APP_ID=<get from https://developer.adzuna.com dashboard>
 EOF
 ```
+
+Also: **stop the bot on the PC before `pm2 start` on the VM** — Telegram
+allows only one polling consumer per token; two pollers = 409 conflicts.
 
 ## 3. Migrate your existing single-user data
 
