@@ -30,6 +30,30 @@ try {
   if (LETTER_SCHEMA?.required?.includes('company') && LETTER_SCHEMA?.properties?.achievements)
     pass('LETTER_SCHEMA pins required fields for constrained decoding');
   else fail(`schema = ${JSON.stringify(LETTER_SCHEMA?.required)}`);
+  if (!LETTER_SCHEMA?.properties?.greeting)
+    pass('greeting is removed from the schema (built in code, not by the model)');
+  else fail('greeting should not be a model-filled field');
+
+  // --- collapseField: kills the newline-wall / letter-dump bug ------------
+  const { collapseField, looksLikeFullLetter } = mod;
+  const dumped = 'Dear Hiring Team,' + '\n'.repeat(5000) + 'full letter body here';
+  const collapsed = collapseField(dumped, 600);
+  if ((collapsed.match(/\n/g) || []).length === 0 && collapsed.length <= 600)
+    pass('collapseField strips newline walls and caps length');
+  else fail(`collapseField len=${collapsed.length} newlines=${(collapsed.match(/\n/g) || []).length}`);
+  if (collapseField('  multi   space\t\ttext  ', 100) === 'multi space text')
+    pass('collapseField normalizes internal whitespace');
+  else fail(`collapseField = ${JSON.stringify(collapseField('  multi   space\t\ttext  ', 100))}`);
+
+  // --- looksLikeFullLetter: the quality gate ------------------------------
+  if (looksLikeFullLetter('…thanks for your time.\n\nSincerely,\nRahul Prajapati'))
+    pass('looksLikeFullLetter flags a signature block');
+  else fail('should flag "Sincerely," signatures');
+  if (looksLikeFullLetter('a'.repeat(1500))) pass('looksLikeFullLetter flags oversized fields');
+  else fail('should flag > 1400 char fields');
+  if (!looksLikeFullLetter('A concise, single-sentence opening about the role.'))
+    pass('looksLikeFullLetter passes a clean fragment');
+  else fail('clean fragment wrongly flagged');
 } catch (err) {
   fail(`gemini-cover test crashed: ${err.message}`);
 }

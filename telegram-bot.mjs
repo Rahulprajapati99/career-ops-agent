@@ -769,9 +769,7 @@ async function handleHelp(chatId) {
     `/status [company] — your tracked applications\n\n` +
     `*Documents:*\n` +
     `/tailor — tailor resume (last evaluation)\n` +
-    `/cover — cover-letter PDF\n` +
-    `/applykit — CV + cover letter + prefill notes\n` +
-    `/apply <url> — ATS prefill cheat-sheet\n\n` +
+    `/cover — cover-letter PDF\n\n` +
     `*Setup:*\n` +
     `/setcv — import/replace your resume\n` +
     `/whoami — your id + data root\n` +

@@ -52,13 +52,29 @@ export function parseModelJson(text) {
   return JSON.parse(t.slice(start, end + 1));
 }
 
-/** Constrained-decoding schema for the letter payload. */
+/** Collapse all whitespace (incl. newlines) to single spaces, trim, hard-cap. */
+export function collapseField(s, max = 800) {
+  return String(s || '').replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+/**
+ * Detect a field that captured a whole letter / signature block instead of the
+ * intended fragment — the failure that produced duplicated text and giant
+ * whitespace gaps (the model dumped the entire letter into `greeting`).
+ */
+export function looksLikeFullLetter(s) {
+  const t = String(s || '');
+  return /\b(sincerely|best regards|kind regards|yours truly|warm regards)\b/i.test(t)
+    || (t.match(/\n/g) || []).length > 4
+    || t.length > 1400;
+}
+
+/** Constrained-decoding schema for the letter payload (greeting is built in code). */
 export const LETTER_SCHEMA = {
   type: SchemaType.OBJECT,
   properties: {
     company: { type: SchemaType.STRING },
     role_title: { type: SchemaType.STRING },
-    greeting: { type: SchemaType.STRING },
     opening: { type: SchemaType.STRING },
     profile_intro: { type: SchemaType.STRING },
     achievements: {
@@ -131,11 +147,15 @@ if (isMain) {
 STRICT RULES:
 - Use ONLY facts present in the CV and evaluation report below. Never invent employers, metrics, tools, or claims.
 - No corporate-speak. Banned: "passionate about", "perfect fit", "unique opportunity".
-- Concise: opening 1-2 sentences; profile_intro 2-3 sentences; 2-3 achievements; closing 1-2 sentences.
 - Match the report's language (default English).
-- Do not use double-quote characters inside field values; prefer plain wording.
+- Do NOT use double-quote characters inside field values; prefer plain wording.
+- Each field is ONE short fragment, NOT a full letter. Do NOT write a salutation ("Dear ...") or any sign-off ("Sincerely", the name, contact details) in ANY field — those are added automatically. Never repeat the letter across fields. No line breaks inside a field.
 
-Fill the JSON schema with: company, role_title, greeting (e.g. Dear Hiring Team,), opening (why this role, specific), profile_intro (who the candidate is, grounded in the CV), achievements (2-3 items, each lead + one-sentence quantified impact from the CV), closing (low-key call to action).
+Fill the JSON schema (each field short and single-purpose):
+- opening: 1-2 sentences on why this role, specific to the company.
+- profile_intro: 2-3 sentences on who the candidate is, grounded in the CV.
+- achievements: EXACTLY 2-3 array items, each { lead: a few words; impact: one quantified sentence from the CV }. This is the ONLY place achievements belong.
+- closing: 1-2 sentence low-key call to action.
 
 === EVALUATION REPORT ===
 ${report.slice(0, 14000)}
@@ -146,31 +166,60 @@ ${cv.slice(0, 14000)}
 `;
 
   console.log(`🤖 Generating cover letter with ${modelName}...`);
+
+  // Sanitize a raw model reply into clean, single-purpose, length-capped fields
+  // so no field can carry a full letter or a wall of blank lines into the PDF.
+  const sanitize = (raw) => {
+    if (!raw || typeof raw !== 'object') return null;
+    const achievements = (Array.isArray(raw.achievements) ? raw.achievements : [])
+      .map((a) => ({ lead: collapseField(a?.lead, 100), impact: collapseField(a?.impact, 260) }))
+      .filter((a) => a.lead || a.impact)
+      .slice(0, 3);
+    return {
+      company: collapseField(raw.company, 80),
+      role_title: collapseField(raw.role_title, 120),
+      opening: collapseField(raw.opening, 600),
+      profile_intro: collapseField(raw.profile_intro, 800),
+      closing: collapseField(raw.closing, 500),
+      achievements,
+    };
+  };
+
+  // Accept when the core fragments exist, none swallowed the whole letter, and
+  // at least two achievements landed in the array.
+  const isAcceptable = (L, raw) => Boolean(
+    L && L.opening && L.profile_intro && L.closing
+    && !['opening', 'profile_intro', 'closing'].some((k) => looksLikeFullLetter(raw?.[k]))
+    && L.achievements.length >= 2,
+  );
+
   let letter = null;
+  let best = null;
   let lastErr = null;
-  for (let attempt = 1; attempt <= 2 && !letter; attempt++) {
+  for (let attempt = 1; attempt <= 3 && !letter; attempt++) {
     try {
       const result = await model.generateContent(prompt);
-      letter = parseModelJson(result.response.text());
+      const raw = parseModelJson(result.response.text());
+      const L = sanitize(raw);
+      if (isAcceptable(L, raw)) { letter = L; break; }
+      if (L && L.opening && L.profile_intro && L.closing) best = L; // usable fallback
+      console.error(`⚠️ Attempt ${attempt}: below quality bar (achievements=${L?.achievements.length ?? 0})${attempt < 3 ? ' — retrying' : ''}`);
     } catch (err) {
       lastErr = err;
-      console.error(`⚠️ Attempt ${attempt} failed (${err.message})${attempt < 2 ? ' — retrying' : ''}`);
+      console.error(`⚠️ Attempt ${attempt} failed (${err.message})${attempt < 3 ? ' — retrying' : ''}`);
     }
   }
+  letter = letter || best;
   if (!letter) {
-    console.error(`❌ Gemini returned an unusable payload after 2 attempts: ${lastErr?.message}`);
+    console.error(`❌ Gemini returned an unusable cover-letter payload after 3 attempts: ${lastErr?.message || 'quality bar not met'}`);
     process.exit(1);
-  }
-  for (const key of ['company', 'role_title', 'opening', 'profile_intro', 'closing']) {
-    if (!letter[key] || typeof letter[key] !== 'string') {
-      console.error(`❌ Generated letter is missing "${key}"`);
-      process.exit(1);
-    }
   }
 
   // --- assemble the generate-cover-letter.mjs payload -----------------------
   const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  const defaultOut = join(USER_ROOT, 'output', `${slug(letter.company)}-${slug(letter.role_title)}-cover.pdf`);
+  const company = letter.company || 'the company';
+  const roleTitle = letter.role_title || 'the role';
+  const defaultOut = join(USER_ROOT, 'output', `${slug(company)}-${slug(roleTitle)}-cover.pdf`);
   const payload = {
     candidate: {
       name: cand.full_name || cand.name || 'Candidate',
@@ -180,20 +229,21 @@ ${cv.slice(0, 14000)}
       linkedin: cand.linkedin || '',
     },
     letter: {
-      company: letter.company,
-      role_title: letter.role_title,
+      company,
+      role_title: roleTitle,
       date: new Date().toISOString().slice(0, 10),
-      greeting: letter.greeting || 'Dear Hiring Team,',
+      // Greeting is built here, never by the model (it abused the field).
+      greeting: `Dear ${company} Hiring Team,`,
       opening: letter.opening,
       profile_intro: letter.profile_intro,
-      achievements: Array.isArray(letter.achievements) ? letter.achievements.slice(0, 3) : [],
+      achievements: letter.achievements,
       closing: letter.closing,
     },
     output_path: outPath ? resolve(USER_ROOT, outPath) : defaultOut,
   };
 
   mkdirSync(join(USER_ROOT, 'output'), { recursive: true });
-  const payloadPath = join(USER_ROOT, 'output', `${slug(letter.company)}-cover-payload.json`);
+  const payloadPath = join(USER_ROOT, 'output', `${slug(company)}-cover-payload.json`);
   writeFileSync(payloadPath, JSON.stringify(payload, null, 2));
 
   // --- render via the existing generator (system script, repo-rooted) -------
