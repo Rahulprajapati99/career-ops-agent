@@ -112,6 +112,21 @@ function cvIsPlaceholder(root) {
 const chatState = new Map();
 const urlRegex = /(https?:\/\/[^\s]+)/g;
 
+/**
+ * Strip the wrapping a URL picks up from chat: angle brackets (users copy the
+ * `<url>` usage placeholder literally), quotes/backticks, and trailing
+ * sentence punctuation. Without this, `/apply <https://…>` reached the ATS
+ * layer as an invalid URL and failed with a misleading "unsupported ATS".
+ */
+function cleanUrl(raw) {
+  return String(raw || '')
+    .trim()
+    .replace(/^[<"'`\s]+/, '')
+    .replace(/[>"'`\s]+$/, '')
+    .replace(/[.,);]+$/, '')
+    .trim();
+}
+
 function getLatestFile(dir, suffix) {
   if (!fs.existsSync(dir)) return null;
   const files = fs.readdirSync(dir)
@@ -442,7 +457,8 @@ const PREFILL_HOSTS = /(^|\.)greenhouse\.io$|(^|\.)ashbyhq\.com$|(^|\.)lever\.co
  * pairing it with the job id from the URL (or the page). Returns the original
  * URL when nothing can be resolved.
  */
-async function resolveEmbeddedAtsUrl(url) {
+async function resolveEmbeddedAtsUrl(rawUrl) {
+  const url = cleanUrl(rawUrl);
   try {
     const u = new URL(url);
     if (PREFILL_HOSTS.test(u.hostname)) return url; // already canonical
@@ -685,19 +701,24 @@ async function handleStatus(chatId, companyFilter) {
 // ---------------------------------------------------------------------------
 // Apply (prefill cheat-sheet only — never submits)
 // ---------------------------------------------------------------------------
-async function handleApply(chatId, applyUrl) {
-  const { opts, root } = userCtx(chatId);
-  if (!applyUrl) {
-    await bot.sendMessage(chatId, '❌ Usage: /apply <application-url>');
+async function handleApply(chatId, rawUrl) {
+  const { opts } = userCtx(chatId);
+  const applyUrl = cleanUrl(rawUrl);
+  if (!applyUrl || !/^https?:\/\//i.test(applyUrl)) {
+    await bot.sendMessage(chatId, 'Usage: /apply https://your-application-url\n(paste the link plainly — no < > around it)');
     return;
   }
+  // Use the CV tailored for THE JOB CURRENTLY IN CONTEXT — never a stray
+  // "latest file", which previously attached another company's cover letter.
   const state = chatState.get(chatId);
-  const pdfPath = state?.pdfPath || getLatestFile(path.join(root, 'output'), '.pdf');
+  const pdfPath = state?.pdfPath;
   if (!pdfPath || !fs.existsSync(pdfPath)) {
-    await bot.sendMessage(chatId, '⚠️ No tailored PDF found — /tailor first, then /apply.');
+    await bot.sendMessage(chatId,
+      '⚠️ I don\'t have a tailored resume in memory for this session. Send the job URL, tap *Tailor My Resume*, then run /apply — so I attach the CV tailored for *this* role.',
+      { parse_mode: 'Markdown' });
     return;
   }
-  await bot.sendMessage(chatId, '⏳ Generating ATS prefill cheat-sheet...');
+  await bot.sendMessage(chatId, `⏳ Generating ATS prefill cheat-sheet for your *${state.company}* CV...`, { parse_mode: 'Markdown' });
   try {
     const prefillUrl = await resolveEmbeddedAtsUrl(applyUrl);
     const { stdout } = await execAsync(
@@ -866,7 +887,7 @@ bot.on('message', async (msg) => {
 
     // URLs → evaluate.
     const links = text.match(urlRegex);
-    if (links?.length) return await evaluateJd(chatId, { url: links[0] });
+    if (links?.length) return await evaluateJd(chatId, { url: cleanUrl(links[0]) });
 
     // Long plain text → treat as a pasted JD.
     if (text.length > 400) return await evaluateJd(chatId, { pastedText: text });
