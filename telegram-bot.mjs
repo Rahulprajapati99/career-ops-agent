@@ -604,7 +604,7 @@ async function handleCvPaste(chatId, text) {
 // ---------------------------------------------------------------------------
 // Jobs, scan, status
 // ---------------------------------------------------------------------------
-async function handleJobs(chatId) {
+async function handleJobs(chatId, page = 1) {
   const { root } = userCtx(chatId);
   const pipelinePath = path.join(root, 'data', 'pipeline.md');
   if (!fs.existsSync(pipelinePath)) {
@@ -618,19 +618,26 @@ async function handleJobs(chatId) {
     await bot.sendMessage(chatId, '📭 No pending jobs in your pipeline — run /scan to discover new ones.');
     return;
   }
-  // Pipeline is already priority-ordered by geo-policy (remote first), so show
-  // the TOP rows rather than the tail.
-  let msg = `🗂 *Your pipeline — ${rows.length} matched job(s)* (remote first):\n\n`;
-  for (const row of rows.slice(0, 12)) {
+  // Pipeline is priority-ordered by geo-policy (remote first). Paginate so the
+  // whole list is reachable from Telegram (no need to open pipeline.md).
+  const PER_PAGE = 8;
+  const pages = Math.ceil(rows.length / PER_PAGE);
+  const p = Math.min(Math.max(1, page || 1), pages);
+  const start = (p - 1) * PER_PAGE;
+  const slice = rows.slice(start, start + PER_PAGE);
+
+  let msg = `🗂 *Matched jobs — ${rows.length} total* (remote first) · page ${p}/${pages}\n\n`;
+  slice.forEach((row, i) => {
     const parts = row.replace(/^- \[ \]\s*/, '').split('|').map((s) => s.trim());
     const [url, company, title, location] = parts;
-    const remoteTag = /\bremote\b|anywhere|worldwide/i.test(location || '') ? ' 🏠' : '';
-    msg += `🏢 *${company || '?'}* — ${title || '?'}${remoteTag}\n`;
+    const remoteTag = /\bremote\b|anywhere|worldwide|americas/i.test(location || '') ? ' 🏠' : '';
+    msg += `*${start + i + 1}. ${company || '?'}* — ${title || '?'}${remoteTag}\n`;
     if (location) msg += `   📍 ${location}\n`;
     if (url) msg += `   ${url}\n`;
     msg += '\n';
-  }
-  if (rows.length > 12) msg += `_...and ${rows.length - 12} more in data/pipeline.md_`;
+  });
+  if (p < pages) msg += `➡️ Send \`/jobs ${p + 1}\` for the next ${Math.min(PER_PAGE, rows.length - start - PER_PAGE)}.`;
+  else if (pages > 1) msg += `_(end of list · \`/jobs 1\` to start over)_`;
   await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown', disable_web_page_preview: true });
 }
 
@@ -639,25 +646,35 @@ async function handleScan(chatId) {
   await bot.sendMessage(chatId, '⏳ Scanning your portals for new matching jobs... (2–5 min)');
   try {
     const { stdout } = await execAsync(`${script('scan.mjs')}`, { ...opts, timeout: 600_000 });
-    const added = stdout.match(/(\d+)\s+new/i)?.[1];
+    // Parse the scan's own counters (don't echo its raw stdout — it references
+    // CLI-only commands and leaks US on-site jobs that geo-policy then drops).
+    const found = stdout.match(/Total jobs found:\s*(\d+)/i)?.[1];
+    const added = stdout.match(/New offers added:\s*(\d+)/i)?.[1] ?? stdout.match(/(\d+)\s+new/i)?.[1];
+    const adzunaMissing = /adzuna:\s*missing credentials/i.test(stdout);
 
-    // Apply the Canadian-worker geography policy (all Canada + US-remote +
-    // US-on-site only at visa sponsors) to the freshly scanned pipeline.
+    // Apply the Canadian-worker geography policy (all Canada + US-remote,
+    // remote first) to the freshly scanned pipeline.
     let geoLine = '';
+    let kept = null;
     try {
       const { stdout: geo } = await execAsync(`${script('geo-policy.mjs')} --json`, opts);
       const g = JSON.parse(geo.slice(geo.indexOf('{'), geo.lastIndexOf('}') + 1));
+      kept = g.kept;
       const usOnsite = g.reasons?.['US on-site (excluded)'] || 0;
-      geoLine = `\n🌎 Geo-policy: ${g.kept} kept — remote first, then Canada. ${g.dropped} filtered` +
-        (usOnsite ? ` (${usOnsite} US on-site)` : '') + '.';
+      const foreign = g.reasons?.['Outside North America'] || 0;
+      geoLine = `\n🌎 *After geo-policy:* ${g.kept} kept (remote first, then Canada), ${g.dropped} filtered` +
+        (usOnsite || foreign ? ` — ${usOnsite} US on-site, ${foreign} outside N. America` : '') +
+        (g.deduped ? `, ${g.deduped} duplicates` : '') + '.';
     } catch (geoErr) {
       console.error(`[${chatId}] geo-policy error (non-fatal):`, geoErr.message);
     }
 
-    const tail = stdout.trim().split('\n').slice(-22).join('\n');
-    await bot.sendMessage(chatId,
-      `🔍 *Scan complete.*${added ? ` ${added} new job(s) found.` : ''}${geoLine}\n\n\`\`\`\n${tail.slice(0, 2800)}\n\`\`\`\n\nUse /jobs to browse what matched.`,
-      { parse_mode: 'Markdown' });
+    const msg =
+      `🔍 *Scan complete.*\n` +
+      `Scanned ${found || '?'} postings · ${added || '0'} new.${geoLine}\n\n` +
+      (kept ? `Send /jobs to browse your ${kept} matched job${kept === 1 ? '' : 's'} (remote first).` : 'Send /jobs to browse.') +
+      (adzunaMissing ? '\n\n⚠️ Adzuna credentials missing on the server — add ADZUNA_APP_ID + ADZUNA_APP_KEY to .env for full US/Canada coverage.' : '');
+    await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
   } catch (error) {
     console.error(`[${chatId}] scan error:`, error);
     await bot.sendMessage(chatId, '❌ Scan failed — check portals.yml in your data root and the bot logs.');
@@ -875,7 +892,9 @@ bot.on('message', async (msg) => {
     if (text === '/help') return await handleHelp(chatId);
     if (text === '/whoami') return await handleWhoami(chatId);
     if (text === '/diag') return await handleDiag(chatId);
-    if (text === '/jobs') return await handleJobs(chatId);
+    if (text === '/jobs' || /^\/jobs\s+\d+$/.test(text)) {
+      return await handleJobs(chatId, parseInt(text.split(/\s+/)[1], 10) || 1);
+    }
     if (text === '/scan') return await handleScan(chatId);
     if (text === '/tailor') return await handleTailor(chatId);
     if (text === '/cover') return await handleCover(chatId);

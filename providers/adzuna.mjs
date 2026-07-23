@@ -84,8 +84,16 @@ export function normalizeAdzunaJob(j) {
   if (!j || typeof j !== 'object') return null;
   const title = cleanText(j.title);
   if (!title) return null;
-  const url = typeof j.redirect_url === 'string' ? j.redirect_url.trim() : '';
+  let url = typeof j.redirect_url === 'string' ? j.redirect_url.trim() : '';
   if (!url || !/^https?:\/\//i.test(url)) return null;
+  // Adzuna mints a fresh `se=` session token on every request, so the SAME ad
+  // arrives with a different URL each scan and evades URL-based dedup. Drop that
+  // volatile param (the stable /land/ad/{id} + utm identity remains).
+  try {
+    const u = new URL(url);
+    u.searchParams.delete('se');
+    url = u.toString();
+  } catch { /* keep original url */ }
   const company = cleanText(j.company?.display_name) || 'Adzuna';
   const location = cleanText(j.location?.display_name);
   /** @type {ReturnType<typeof normalizeAdzunaJob>} */

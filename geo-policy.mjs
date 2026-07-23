@@ -108,11 +108,19 @@ if (isMain) {
 
   const reasons = {};
   const kept = [];
+  const seen = new Set();
   let dropped = 0;
+  let deduped = 0;
   for (const { line, row } of rows) {
     const c = classifyRow(row);
     reasons[c.reason] = (reasons[c.reason] || 0) + 1;
-    if (c.keep) kept.push({ line, rank: c.rank }); else dropped += 1;
+    if (!c.keep) { dropped += 1; continue; }
+    // Dedup identical postings that arrive under different URLs (e.g. Adzuna's
+    // per-request se= token, or the same job cross-listed on two boards).
+    const fp = `${row.company}|${row.title}|${row.location}`.toLowerCase().replace(/\s+/g, ' ').trim();
+    if (seen.has(fp)) { deduped += 1; continue; }
+    seen.add(fp);
+    kept.push({ line, rank: c.rank });
   }
   // Stable sort by rank → remote first, then Canada on-site/hybrid, then unknown.
   kept.sort((a, b) => a.rank - b.rank);
@@ -123,9 +131,9 @@ if (isMain) {
   writeFileSync(pipelinePath, out);
 
   if (asJson) {
-    console.log(JSON.stringify({ kept: kept.length, dropped, reasons }));
+    console.log(JSON.stringify({ kept: kept.length, dropped, deduped, reasons }));
   } else {
-    console.log(`🌎 Geo-policy: kept ${kept.length} (remote first), dropped ${dropped}`);
+    console.log(`🌎 Geo-policy: kept ${kept.length} (remote first), dropped ${dropped}, deduped ${deduped}`);
     for (const [r, n] of Object.entries(reasons).sort((a, b) => b[1] - a[1])) {
       console.log(`   ${n.toString().padStart(4)} · ${r}`);
     }
