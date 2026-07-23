@@ -551,8 +551,14 @@ async function handleStatus(chatId, companyFilter) {
       : `${script('tracker.mjs')} query --json --limit 20`;
     const { stdout } = await execAsync(cmd, opts);
 
-    let rows;
-    try { rows = JSON.parse(stdout); } catch { rows = null; }
+    // tracker.mjs may print informational lines (e.g. "index stale —
+    // resyncing") before the JSON — extract the array instead of parsing raw.
+    let rows = null;
+    const s = stdout.indexOf('[');
+    const e = stdout.lastIndexOf(']');
+    if (s !== -1 && e > s) {
+      try { rows = JSON.parse(stdout.slice(s, e + 1)); } catch { rows = null; }
+    }
 
     if (!Array.isArray(rows) || rows.length === 0) {
       await bot.sendMessage(chatId,
