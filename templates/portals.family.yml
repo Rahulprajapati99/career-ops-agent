@@ -12,6 +12,10 @@
 scan_history:
   recheck_after_days: 30
 
+# Family default: only surface postings published in the last 7 days
+# (offers with no date always pass — never penalize missing data).
+max_posting_age_days: 7
+
 # ── Title filter — CUSTOMIZE to the family's target roles ─────────────────
 title_filter:
   positive:

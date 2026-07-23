@@ -23,6 +23,11 @@ import { basename, resolve, dirname, relative, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
+// User layer honors CAREER_OPS_USER_ROOT (multi-user setups run with the
+// user's output/ and config/ outside the repo); repo-root fallback unchanged.
+const USER_ROOT = process.env.CAREER_OPS_USER_ROOT
+  ? resolve(process.env.CAREER_OPS_USER_ROOT)
+  : ROOT;
 
 const ALLOWED_HOSTS = new Set([
   'boards.greenhouse.io',
@@ -50,8 +55,8 @@ if (!applyUrl || !pdfPath) {
 
 // ── PDF validation ────────────────────────────────────────────────────
 
-const outputDir = resolve(ROOT, 'output');
-const absPdf    = resolve(ROOT, pdfPath);
+const outputDir = resolve(USER_ROOT, 'output');
+const absPdf    = resolve(USER_ROOT, pdfPath);
 
 const relPdf = relative(outputDir, absPdf);
 if (relPdf === '' || relPdf.startsWith('..') || isAbsolute(relPdf)) {
@@ -128,7 +133,7 @@ function detectAts(url) {
 // ── Profile reader ────────────────────────────────────────────────────
 
 function readProfile() {
-  const profilePath = resolve(ROOT, 'config/profile.yml');
+  const profilePath = process.env.CAREER_OPS_PROFILE || resolve(USER_ROOT, 'config/profile.yml');
   if (!existsSync(profilePath)) return {};
   const raw = readFileSync(profilePath, 'utf-8');
 
@@ -154,7 +159,7 @@ function readProfile() {
 
 function readCover() {
   if (!coverPath) return null;
-  const abs = resolve(ROOT, coverPath);
+  const abs = resolve(USER_ROOT, coverPath);
   if (!existsSync(abs)) {
     console.error(`Warning: cover letter not found at ${coverPath} — skipping`);
     return null;

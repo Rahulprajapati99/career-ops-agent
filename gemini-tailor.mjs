@@ -92,6 +92,7 @@ if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
 let jdPath = '';
 let reportPath = '';
 let modelName = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
+let atsGaps = '';
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--jd' && args[i + 1]) {
@@ -100,6 +101,10 @@ for (let i = 0; i < args.length; i++) {
     reportPath = args[++i];
   } else if (args[i] === '--model' && args[i + 1]) {
     modelName = args[++i];
+  } else if (args[i] === '--ats-gaps' && args[i + 1]) {
+    // Semicolon-separated JD keywords the base CV does not currently surface
+    // (computed by ats-match.mjs) — closes the tailoring feedback loop.
+    atsGaps = args[++i];
   }
 }
 
@@ -316,10 +321,23 @@ async function callGeminiWithRetry(genAI, modelId, contents, maxRetries = 3) {
 console.log(`🤖  Calling Gemini (${modelName}) for CV tailoring... this may take 30-90 seconds.\n`);
 
 const genAI = new GoogleGenerativeAI(apiKey);
+
+// ATS keyword-gap feedback (from ats-match.mjs): terms the JD stresses that the
+// base CV never surfaces. Grounding rule stays absolute — a gap term may only
+// appear where the CV genuinely evidences it; otherwise it must be left out.
+// Feeding the gap list prevents the tailor from silently DROPPING covered
+// keywords while condensing (seen live: score fell 24%→20% without this loop).
+const atsGapsBlock = atsGaps
+  ? `\n\nATS KEYWORD GAPS (from a keyword scan of the JD vs the base CV):\n${atsGaps}\n` +
+    `Rules for these terms: include a term ONLY if the base CV demonstrably supports the skill/experience ` +
+    `(synonyms, tools used, described work) — surface it with the JD's exact wording where truthful. ` +
+    `If the CV does not support a term, DO NOT add it. Never remove JD-relevant keywords that the base CV already contains.`
+  : '';
+
 const contents = [
   { text: systemPrompt },
   {
-    text: `\n\nEVALUATION REPORT:\n\n${reportText}\n\nJOB DESCRIPTION:\n\n${jdText}\n\nNow, generate and output the fully filled HTML CV matching the rules above. Output ONLY raw HTML.`,
+    text: `\n\nEVALUATION REPORT:\n\n${reportText}\n\nJOB DESCRIPTION:\n\n${jdText}${atsGapsBlock}\n\nNow, generate and output the fully filled HTML CV matching the rules above. Output ONLY raw HTML.`,
   },
 ];
 

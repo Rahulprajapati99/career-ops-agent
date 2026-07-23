@@ -262,9 +262,22 @@ async function evaluateJd(chatId, { url = null, pastedText = null }) {
 }
 
 // ---------------------------------------------------------------------------
-// Tailor — tailored CV + PDF (per-user)
+// Tailor — tailored CV + PDF (per-user), ATS-aware
 // ---------------------------------------------------------------------------
-async function handleTailor(chatId) {
+/** Run the zero-token ATS keyword scan of the current JD vs a CV/HTML. */
+async function atsScan(chatId, jdFile, { html = null } = {}) {
+  const { root, opts } = userCtx(chatId);
+  const htmlArg = html ? ` --html ${q(html)}` : '';
+  const { stdout } = await execAsync(
+    `${script('ats-match.mjs')} --jd ${q(jdFile)} --cv ${q(path.join(root, 'cv.md'))}${htmlArg} --json`,
+    opts,
+  );
+  const s = stdout.indexOf('{');
+  const e = stdout.lastIndexOf('}');
+  return JSON.parse(stdout.slice(s, e + 1));
+}
+
+async function handleTailor(chatId, { force = false } = {}) {
   const { longOpts } = userCtx(chatId);
   const state = chatState.get(chatId);
 
@@ -281,13 +294,41 @@ async function handleTailor(chatId) {
     return;
   }
 
+  // Self-awareness pre-check (zero-token, no LLM): if the base CV already
+  // covers the JD's keywords with no must-have gaps, tailoring is unlikely to
+  // help — offer to skip instead of burning an LLM call.
+  let gaps = [];
+  try {
+    const scan = await atsScan(chatId, state.jdFile);
+    state.atsBefore = scan.before;
+    gaps = (scan.missingMustHave?.length ? scan.missingMustHave : scan.missing) || [];
+    chatState.set(chatId, state);
+    if (!force && scan.before >= 80 && (scan.missingMustHave || []).length === 0) {
+      await bot.sendMessage(chatId,
+        `🧠 Your current resume already matches *${scan.before}%* of this JD's keywords with no missing must-haves — tailoring is unlikely to move the needle. Spend the LLM call anyway?`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: { inline_keyboard: [[
+            { text: '✂️ Tailor anyway', callback_data: 'tailor_force' },
+            { text: '👍 Keep my resume as-is', callback_data: 'tailor_skip' },
+          ]] },
+        });
+      return;
+    }
+  } catch (scanErr) {
+    console.error(`[${chatId}] pre-tailor ATS scan failed (non-fatal):`, scanErr.message);
+  }
+
   await bot.sendMessage(chatId,
     `⏳ Tailoring your resume for *${state.company}* — *${state.role}*... (30–90s)`,
     { parse_mode: 'Markdown' });
 
   try {
+    // Feed the keyword gaps into the tailor so it surfaces covered-but-hidden
+    // terms and never drops existing ones (grounding enforced in the prompt).
+    const gapsArg = gaps.length ? ` --ats-gaps "${gaps.slice(0, 10).join('; ').replace(/"/g, '')}"` : '';
     const { stdout } = await execAsync(
-      `${script('gemini-tailor.mjs')} --jd ${q(state.jdFile)} --report ${q(state.reportPath)}`,
+      `${script('gemini-tailor.mjs')} --jd ${q(state.jdFile)} --report ${q(state.reportPath)}${gapsArg}`,
       longOpts,
     );
     const htmlPath = parseMarker(stdout, 'HTML_PATH');
@@ -313,20 +354,22 @@ async function handleTailor(chatId) {
     state.htmlPath = htmlPath;
     chatState.set(chatId, state);
 
-    // ATS match report — before (original cv.md) vs after (tailored HTML).
+    // ATS match report — before (original cv.md) vs after (tailored HTML),
+    // with an honest warning if the tailored version scores WORSE.
     try {
-      const { root } = userCtx(chatId);
-      const { stdout: ats } = await execAsync(
-        `${script('ats-match.mjs')} --jd ${q(state.jdFile)} --cv ${q(path.join(root, 'cv.md'))} --html ${q(htmlPath)}`,
-        userCtx(chatId).opts,
-      );
-      const before = parseMarker(ats, 'ATS_BEFORE');
-      const after = parseMarker(ats, 'ATS_AFTER');
-      const missing = parseMarker(ats, 'ATS_MISSING');
-      if (before && after) {
+      const scan = await atsScan(chatId, state.jdFile, { html: htmlPath });
+      const { before, after } = scan;
+      if (Number.isFinite(before) && Number.isFinite(after)) {
+        const missing = (scan.missingMustHave?.length ? scan.missingMustHave : scan.missing || []).slice(0, 8);
         let atsMsg = `📊 *ATS keyword match:* ${before}% → *${after}%*`;
-        if (missing) atsMsg += `\n🔎 Still missing: _${missing.split(';').map((s) => s.trim()).join(', ')}_`;
-        atsMsg += '\n_(Missing terms are only added if they are true — the fact-checker blocks fabrication.)_';
+        if (missing.length) atsMsg += `\n🔎 Still missing: _${missing.join(', ')}_`;
+        if (after < before) {
+          atsMsg += `\n\n⚠️ *The tailored version scores LOWER on keywords than your original.* ` +
+            `That usually means condensing dropped covered terms. Your original resume may be the stronger ATS bet here — ` +
+            `or resend the URL and /tailor again for another attempt.`;
+        } else {
+          atsMsg += '\n_(Missing terms are only added when your CV truly supports them — fabrication is blocked.)_';
+        }
         await bot.sendMessage(chatId, atsMsg, { parse_mode: 'Markdown' });
       }
     } catch (atsErr) {
@@ -390,6 +433,46 @@ async function handleCover(chatId, { silent = false } = {}) {
 // ---------------------------------------------------------------------------
 // Apply kit — tailored CV + cover letter + prefill notes, delivered together
 // ---------------------------------------------------------------------------
+const PREFILL_HOSTS = /(^|\.)greenhouse\.io$|(^|\.)ashbyhq\.com$|(^|\.)lever\.co$/i;
+
+/**
+ * Companies often embed Greenhouse on their own domain (e.g.
+ * netbrain.com/...?career_jobid=507...). Resolve such pages to the canonical
+ * boards.greenhouse.io URL by scanning the page for the embed board slug and
+ * pairing it with the job id from the URL (or the page). Returns the original
+ * URL when nothing can be resolved.
+ */
+async function resolveEmbeddedAtsUrl(url) {
+  try {
+    const u = new URL(url);
+    if (PREFILL_HOSTS.test(u.hostname)) return url; // already canonical
+    const jobIdFromUrl = ['gh_jid', 'career_jobid', 'jobid', 'jid', 'job']
+      .map((k) => u.searchParams.get(k))
+      .find((v) => v && /^\d{5,}$/.test(v));
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15_000);
+    let html = '';
+    try {
+      const res = await fetch(url, {
+        headers: { 'user-agent': 'Mozilla/5.0 (compatible; career-ops/1.3)' },
+        signal: controller.signal,
+      });
+      if (res.ok) html = await res.text();
+    } finally {
+      clearTimeout(timer);
+    }
+    if (!html) return url;
+
+    const org = html.match(/boards\.greenhouse\.io\/(?:embed\/job_board\/js\?for=|embed\/job_app\?for=|v1\/boards\/)?([a-z0-9_-]{2,})/i)?.[1]
+      || html.match(/greenhouse\.io\/embed\/job_board\?for=([a-z0-9_-]{2,})/i)?.[1];
+    const jobId = jobIdFromUrl || html.match(/gh_jid=(\d{5,})/)?.[1];
+    if (org && jobId && !['embed', 'v1', 'boards'].includes(org)) {
+      return `https://boards.greenhouse.io/${org}/jobs/${jobId}`;
+    }
+  } catch { /* fall through to the original URL */ }
+  return url;
+}
 async function handleApplyKit(chatId) {
   const { opts } = userCtx(chatId);
   const state = chatState.get(chatId);
@@ -419,20 +502,25 @@ async function handleApplyKit(chatId) {
   // 3) ATS prefill notes (when the original application URL is known)
   if (state.url) {
     try {
+      const prefillUrl = await resolveEmbeddedAtsUrl(state.url);
       const { stdout } = await execAsync(
-        `${script('prepare-application.mjs')} --url "${state.url}" --pdf ${q(state.pdfPath)}`,
+        `${script('prepare-application.mjs')} --url "${prefillUrl}" --pdf ${q(state.pdfPath)}`,
         opts,
       );
       const notes = stdout.trim();
       if (notes) {
+        const via = prefillUrl !== state.url ? ` _(resolved the branded page to its Greenhouse board)_\n` : '';
         await bot.sendMessage(chatId,
-          `3/3 📋 *ATS prefill notes:*\n\n\`\`\`\n${notes.slice(0, 3300)}\n\`\`\``,
+          `3/3 📋 *ATS prefill notes:*${via}\n\`\`\`\n${notes.slice(0, 3300)}\n\`\`\``,
           { parse_mode: 'Markdown' });
       } else {
-        await bot.sendMessage(chatId, '3/3 ℹ️ No prefill notes available for this ATS.');
+        await bot.sendMessage(chatId, '3/3 ℹ️ The ATS returned no prefill fields for this posting.');
       }
-    } catch {
-      await bot.sendMessage(chatId, '3/3 ℹ️ Prefill notes unavailable for this URL (supported: Greenhouse, Ashby, Lever).');
+    } catch (err) {
+      console.error(`[${chatId}] prefill error:`, (err.stderr || err.message || '').slice(0, 300));
+      await bot.sendMessage(chatId,
+        '3/3 ℹ️ Prefill notes not available — this page hosts its application on a custom/unrecognized ATS. ' +
+        'Your tailored CV and cover letter above are everything you need; open the posting and fill the form directly.');
     }
   } else {
     await bot.sendMessage(chatId, '3/3 ℹ️ No application URL on file (JD was pasted) — no prefill notes.');
@@ -611,8 +699,9 @@ async function handleApply(chatId, applyUrl) {
   }
   await bot.sendMessage(chatId, '⏳ Generating ATS prefill cheat-sheet...');
   try {
+    const prefillUrl = await resolveEmbeddedAtsUrl(applyUrl);
     const { stdout } = await execAsync(
-      `${script('prepare-application.mjs')} --url "${applyUrl}" --pdf ${q(pdfPath)}`,
+      `${script('prepare-application.mjs')} --url "${prefillUrl}" --pdf ${q(pdfPath)}`,
       opts,
     );
     const output = stdout.trim();
@@ -621,10 +710,12 @@ async function handleApply(chatId, applyUrl) {
         `📋 *ATS prefill guide:*\n\n\`\`\`\n${output.slice(0, 3300)}\n\`\`\``,
         { parse_mode: 'Markdown' });
     } else {
-      await bot.sendMessage(chatId, '⚠️ No prefill guide for this URL (supported: Greenhouse, Ashby, Lever).');
+      await bot.sendMessage(chatId, '⚠️ The ATS returned no prefill fields for this posting.');
     }
-  } catch {
-    await bot.sendMessage(chatId, '⚠️ Could not generate a prefill guide — make sure the URL is a direct application link.');
+  } catch (err) {
+    console.error(`[${chatId}] apply prefill error:`, (err.stderr || err.message || '').slice(0, 300));
+    await bot.sendMessage(chatId,
+      '⚠️ No prefill guide for this URL — it hosts its application on a custom/unrecognized ATS. Apply directly on the page with your tailored documents.');
   }
 }
 
@@ -805,6 +896,7 @@ bot.on('callback_query', async (query) => {
   } catch { /* message too old to edit */ }
 
   if (query.data === 'tailor_yes') return handleTailor(chatId);
+  if (query.data === 'tailor_force') return handleTailor(chatId, { force: true });
   if (query.data === 'tailor_skip') {
     await bot.sendMessage(chatId,
       '👍 Skipped — the evaluation is saved. /tailor works any time before your next evaluation.');
