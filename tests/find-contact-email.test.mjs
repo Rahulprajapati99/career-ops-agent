@@ -7,7 +7,7 @@ console.log('\nContact email — find-contact-email.mjs');
 
 try {
   const mod = await import(pathToFileURL(join(ROOT, 'find-contact-email.mjs')).href);
-  const { parseName, deriveDomain, generatePatterns } = mod;
+  const { parseName, deriveDomain, generatePatterns, parseAccount, writeHunterKey } = mod;
 
   // --- parseName ----------------------------------------------------------
   const jane = parseName('Jane Smith');
@@ -49,6 +49,39 @@ try {
   if (generatePatterns('jane', 'smith', '').length === 0)
     pass('generatePatterns returns [] without a domain');
   else fail('no-domain should yield no patterns');
+
+  // --- parseAccount (Hunter usage) ---------------------------------------
+  const acct = parseAccount({ data: { requests: { searches: { used: 7, available: 43 } }, reset_date: '2026-08-23' } });
+  if (acct && acct.used === 7 && acct.available === 43 && acct.limit === 50 && acct.resetDate === '2026-08-23')
+    pass('parseAccount reads used/available and derives the 50 limit');
+  else fail(`parseAccount = ${JSON.stringify(acct)}`);
+  if (parseAccount({ data: { calls: { used: 2, available: 48 } } })?.limit === 50)
+    pass('parseAccount falls back to the legacy calls shape');
+  else fail('parseAccount legacy shape failed');
+  if (parseAccount({ errors: [{ id: 'unauthorized' }] }) === null)
+    pass('parseAccount returns null for an error/invalid-key response');
+  else fail('parseAccount should be null on error');
+
+  // --- writeHunterKey (comment-preserving profile edit) ------------------
+  const { mkdtempSync, rmSync, writeFileSync, readFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const tmp = mkdtempSync(join((await import('node:os')).tmpdir(), 'hunter-'));
+  try {
+    const p = join(tmp, 'profile.yml');
+    writeFileSync(p, 'candidate:\n  full_name: "Rahul"\n# a comment\n');
+    writeHunterKey(p, 'ABC123KEY456DEF789GH');
+    const out1 = readFileSync(p, 'utf-8');
+    if (out1.includes('integrations:') && out1.includes('hunter_api_key: "ABC123KEY456DEF789GH"') && out1.includes('# a comment'))
+      pass('writeHunterKey appends an integrations block, preserving comments');
+    else fail(`writeHunterKey add:\n${out1}`);
+    writeHunterKey(p, 'NEWKEY000111222333');
+    const out2 = readFileSync(p, 'utf-8');
+    if (out2.includes('hunter_api_key: "NEWKEY000111222333"') && !out2.includes('ABC123KEY'))
+      pass('writeHunterKey replaces an existing key');
+    else fail(`writeHunterKey replace:\n${out2}`);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
 } catch (err) {
   fail(`find-contact-email test crashed: ${err.message}`);
 }

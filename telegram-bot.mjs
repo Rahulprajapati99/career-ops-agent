@@ -575,7 +575,8 @@ async function handleDocument(chatId, doc) {
     if (cvPath && fs.existsSync(cvPath)) {
       const size = fs.readFileSync(cvPath, 'utf-8').length;
       await bot.sendMessage(chatId,
-        `✅ *Resume imported!* (${size} chars)\n\nYou're all set — send me any job URL and I'll evaluate it against your CV.`,
+        `✅ *Resume imported!* (${size} chars)\n\nYou're all set — send me any job URL and I'll evaluate it against your CV.\n\n` +
+        `_Optional:_ add your own free *Hunter.io* API key with \`/setkey <key>\` so /contact can verify recruiter emails (50 lookups/month, your own quota).`,
         { parse_mode: 'Markdown' });
     } else {
       await bot.sendMessage(chatId, '❌ Import failed — try a different format, or /setcv to paste the text.');
@@ -808,9 +809,15 @@ async function handleContact(chatId, argstr) {
     const alts = (parseMarker(stdout, 'EMAIL_ALTS') || '').split(';').map((s) => s.trim()).filter(Boolean);
 
     if (!best) { await bot.sendMessage(chatId, '❌ Could not derive an email — try /contact <Name> at <their-domain.com>.'); return; }
+    const hUsed = parseMarker(stdout, 'HUNTER_USED');
+    const hLimit = parseMarker(stdout, 'HUNTER_LIMIT');
     let msg = `📇 ${name} — ${target}\n\n${verified ? '✅ Verified' : '🔮 Best guess'}: ${best}`;
     if (alts.length) msg += `\nAlternatives: ${alts.join('   ')}`;
-    msg += verified ? '' : '\n\n(Educated guess from the company\'s email pattern — confirm before sending. Add a free Hunter.io key to your profile to verify.)';
+    msg += verified
+      ? ''
+      : '\n\n(Educated guess from the company\'s email pattern — confirm before sending.' +
+        (hUsed ? '' : ' Add a free Hunter.io key with /setkey to verify.') + ')';
+    if (hUsed) msg += `\n🔑 Hunter: ${hUsed}/${hLimit} searches used this month.`;
     await bot.sendMessage(chatId, msg);
 
     // Draft a tailored outreach email when a job is in context.
@@ -837,6 +844,47 @@ async function handleContact(chatId, argstr) {
   } catch (error) {
     console.error(`[${chatId}] contact error:`, error);
     await bot.sendMessage(chatId, friendlyError(error));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Hunter.io key (per-user) — set + usage
+// ---------------------------------------------------------------------------
+async function handleSetKey(chatId, rawKey) {
+  const { opts } = userCtx(chatId);
+  // Hunter keys are hex; strip anything else (also neutralizes shell metachars).
+  const key = String(rawKey || '').replace(/[^A-Za-z0-9]/g, '');
+  if (key.length < 20) {
+    await bot.sendMessage(chatId,
+      'Usage: /setkey <your Hunter.io API key>\n\nGet a free key (50 email lookups/month) at hunter.io → sign up → API. Each family member uses their own key.');
+    return;
+  }
+  await bot.sendMessage(chatId, '🔑 Validating your Hunter.io key...');
+  try {
+    const { stdout } = await execAsync(`${script('find-contact-email.mjs')} --set-key ${q(key)}`, opts);
+    if (parseMarker(stdout, 'HUNTER_SAVED') === 'yes') {
+      const used = parseMarker(stdout, 'HUNTER_USED');
+      const limit = parseMarker(stdout, 'HUNTER_LIMIT');
+      await bot.sendMessage(chatId,
+        `✅ Hunter.io key saved — *${used}/${limit}* searches used this month.\n/contact will now verify emails (and I'll show your remaining credits each time).`,
+        { parse_mode: 'Markdown' });
+    } else {
+      await bot.sendMessage(chatId, '❌ Hunter.io rejected that key. Double-check it (hunter.io → API) and try /setkey again.');
+    }
+  } catch (err) {
+    console.error(`[${chatId}] setkey error:`, err.message);
+    await bot.sendMessage(chatId, '❌ Could not validate the key (network issue or bad key). Try again in a moment.');
+  }
+}
+
+async function handleCredits(chatId) {
+  const { opts } = userCtx(chatId);
+  try {
+    const { stdout } = await execAsync(`${script('find-contact-email.mjs')} --credits`, opts);
+    const line = stdout.split('\n').find((l) => /Hunter|No Hunter/i.test(l)) || 'No Hunter.io key on file.';
+    await bot.sendMessage(chatId, line.replace(/^[^\w]*/, '').trim());
+  } catch {
+    await bot.sendMessage(chatId, '⚠️ Could not read Hunter.io usage right now.');
   }
 }
 
@@ -873,6 +921,8 @@ async function handleHelp(chatId) {
     `/contact <name> [at company] — find a contact's email + draft outreach\n\n` +
     `*Setup:*\n` +
     `/setcv — import/replace your resume\n` +
+    `/setkey <key> — your Hunter.io key (verify contact emails, 50/mo)\n` +
+    `/credits — Hunter.io searches used this month\n` +
     `/whoami — your id + data root\n` +
     `/diag — server health check\n\n` +
     `_I prepare everything but never submit applications — you stay in control._`,
@@ -982,6 +1032,10 @@ bot.on('message', async (msg) => {
     if (text.startsWith('/contact')) {
       return await handleContact(chatId, text.replace('/contact', '').trim());
     }
+    if (text.startsWith('/setkey')) {
+      return await handleSetKey(chatId, text.replace('/setkey', '').trim());
+    }
+    if (text === '/credits') return await handleCredits(chatId);
     if (text.startsWith('/')) {
       return await bot.sendMessage(chatId, '❓ Unknown command — /help lists everything.');
     }
