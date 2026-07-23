@@ -17,7 +17,7 @@
  * Usage:
  *   node gemini-cover.mjs --report reports/NNN-company.md [--jd jd.txt] [--out output/x-cover.pdf]
  *
- * Env: GEMINI_API_KEY (required), GEMINI_MODEL (default gemini-3.5-flash),
+ * Env: GEMINI_API_KEY (required), GEMINI_MODEL (default gemini-3.6-flash),
  *      CAREER_OPS_USER_ROOT / CAREER_OPS_PROFILE honored for multi-user setups.
  *
  * Output marker (for the Telegram bot / web dashboard):
@@ -115,7 +115,7 @@ if (isMain) {
   const cand = profile.candidate || {};
 
   // --- ask Gemini for the letter body (schema-constrained JSON) -------------
-  const modelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+  const modelName = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
   const genAI = new GoogleGenerativeAI(apiKey);
   const model = genAI.getGenerativeModel({
     model: modelName,

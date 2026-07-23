@@ -14,18 +14,13 @@
  * Requires:
  *   GEMINI_API_KEY in .env (or environment variable)
  *
- * Free-tier model: gemini-2.5-flash (generous quota, no billing required)
+ * Default model: gemini-3.6-flash (GA 2026-07-21 — current workhorse model)
  *
- * Model deprecation reference (per Google AI for Developers, May 2026):
- *   - gemini-2.0-flash       deprecated 2026-03-31  (do not use)
- *   - gemini-2.0-flash-lite  deprecated 2026-03-31
- *   - gemini-2.5-flash       deprecated 2026-06-17  (current default)
- *   - gemini-2.5-flash-lite  deprecated 2026-07-22
- * Stable Gemini models follow a 12-month lifecycle from their release date.
+ * Model lifecycle reference (per Google AI for Developers):
+ *   Stable Gemini models follow a 12-month lifecycle from their release date.
+ *   When the current default approaches its deprecation date, bump
+ *   `modelName` below (plus FALLBACK_MODELS and the --model examples).
  * Source: https://ai.google.dev/gemini-api/docs/models
- *
- * When the current default approaches its deprecation date, bump
- * `modelName` below and the `--model` examples accordingly.
  */
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
@@ -87,11 +82,11 @@ if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
   USAGE
     node gemini-eval.mjs "<JD text>"
     node gemini-eval.mjs --file ./jds/my-job.txt
-    node gemini-eval.mjs --model gemini-2.5-flash "<JD text>"
+    node gemini-eval.mjs --model gemini-3.6-flash "<JD text>"
 
   OPTIONS
     --file <path>    Read JD from a file instead of inline text
-    --model <name>   Gemini model to use (default: gemini-2.5-flash)
+    --model <name>   Gemini model to use (default: gemini-3.6-flash)
     --no-save        Do not save report to reports/ directory
     --help           Show this help
 
@@ -109,7 +104,7 @@ if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
 
 // Parse flags
 let jdText = '';
-let modelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+let modelName = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 let saveReport = true;
 
 for (let i = 0; i < args.length; i++) {
@@ -295,8 +290,8 @@ LEGITIMACY: <High Confidence | Proceed with Caution | Suspicious>
 // Retry helper with exponential backoff + model fallback
 // ---------------------------------------------------------------------------
 const FALLBACK_MODELS = [
-  'gemini-3.1-flash-lite',  // lighter model, separate quota pool
-  'gemini-3-flash-preview', // preview fallback
+  'gemini-3.5-flash',      // previous GA workhorse, separate quota pool
+  'gemini-3.5-flash-lite', // lightest GA model, separate quota pool
 ];
 
 function sleep(ms) {

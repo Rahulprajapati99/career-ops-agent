@@ -7,7 +7,7 @@
  *
  * Usage:
  *   node gemini-tailor.mjs --jd ./temp_jd.txt --report reports/001-company-2026.md
- *   node gemini-tailor.mjs --model gemini-3.5-flash --jd jd.txt --report report.md
+ *   node gemini-tailor.mjs --model gemini-3.6-flash --jd jd.txt --report report.md
  *
  * Requires:
  *   GEMINI_API_KEY in .env (or environment variable)
@@ -69,12 +69,12 @@ if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
 
   USAGE
     node gemini-tailor.mjs --jd <path> --report <path>
-    node gemini-tailor.mjs --model gemini-3.5-flash --jd jd.txt --report report.md
+    node gemini-tailor.mjs --model gemini-3.6-flash --jd jd.txt --report report.md
 
   OPTIONS
     --jd <path>      Path to the Job Description text file (required)
     --report <path>  Path to the evaluation report .md file (required)
-    --model <name>   Gemini model (default: gemini-3.5-flash)
+    --model <name>   Gemini model (default: gemini-3.6-flash)
     --help           Show this help
 
   SETUP
@@ -84,14 +84,14 @@ if (args.length === 0 || args[0] === '--help' || args[0] === '-h') {
 
   EXAMPLES
     node gemini-tailor.mjs --jd jds/openai-swe.txt --report reports/042-openai-2026-07-14.md
-    node gemini-tailor.mjs --model gemini-3.5-flash --jd temp_jd.txt --report reports/latest.md
+    node gemini-tailor.mjs --model gemini-3.6-flash --jd temp_jd.txt --report reports/latest.md
 `);
   process.exit(0);
 }
 
 let jdPath = '';
 let reportPath = '';
-let modelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+let modelName = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
 
 for (let i = 0; i < args.length; i++) {
   if (args[i] === '--jd' && args[i + 1]) {
@@ -244,8 +244,8 @@ OUTPUT FORMAT:
 // Retry helper with exponential backoff + model fallback
 // ---------------------------------------------------------------------------
 const FALLBACK_MODELS = [
-  'gemini-3.1-flash-lite',
-  'gemini-3-flash-preview',
+  'gemini-3.5-flash',
+  'gemini-3.5-flash-lite',
 ];
 
 function sleep(ms) {

@@ -169,7 +169,7 @@ if (isMain) {
       process.exit(1);
     }
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
-    const modelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+    const modelName = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
     const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
       model: modelName,
       generationConfig: { temperature: 0 },
