@@ -24,8 +24,16 @@
 
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { existsSync, readFileSync } from 'node:fs';
+import yaml from 'js-yaml';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// profile.yml integrations.<name> → env var the providers/tools read.
+const INTEGRATION_ENV = {
+  serpapi_key: 'SERPAPI_KEY',
+  hunter_api_key: 'HUNTER_API_KEY',
+};
 
 /** Repo root (where the system scripts live). */
 export const REPO_ROOT = __dirname;
@@ -64,7 +72,7 @@ export function userRootFor(userId) {
  */
 export function buildUserEnv(userRoot) {
   const root = resolve(userRoot);
-  return {
+  const env = {
     CAREER_OPS_USER_ROOT: root,
     CAREER_OPS_PORTALS: join(root, 'portals.yml'),
     CAREER_OPS_PROFILE: join(root, 'config', 'profile.yml'),
@@ -72,4 +80,16 @@ export function buildUserEnv(userRoot) {
     CAREER_OPS_REPORTS_DIR: join(root, 'reports'),
     CAREER_OPS_ADDITIONS: join(root, 'batch', 'tracker-additions'),
   };
+  // Inject this user's own integration API keys (SerpApi, Hunter, …) so provider
+  // adapters and tools pick them up from the environment — each family member
+  // spends only their own free tier.
+  try {
+    if (existsSync(env.CAREER_OPS_PROFILE)) {
+      const intg = (yaml.load(readFileSync(env.CAREER_OPS_PROFILE, 'utf-8')) || {}).integrations || {};
+      for (const [field, name] of Object.entries(INTEGRATION_ENV)) {
+        if (intg[field] && String(intg[field]).trim()) env[name] = String(intg[field]).trim();
+      }
+    }
+  } catch { /* malformed profile → no keys injected */ }
+  return env;
 }

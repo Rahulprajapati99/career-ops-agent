@@ -126,6 +126,32 @@ job_boards:
     enabled: true
     notes: "Remote board — zero-auth"
 
+  # EchoJobs — tech jobs aggregated from company ATS boards (HiringCafe-style,
+  # free, zero-auth). Highest-yield free ATS aggregator.
+  - name: EchoJobs
+    careers_url: https://echojobs.io
+    provider: echojobs
+    max_pages: 3
+    enabled: true
+    notes: "Aggregated ATS jobs — zero-auth"
+
+  # SerpApi Google Jobs — ONE API over LinkedIn, Indeed, Greenhouse, etc.
+  # Per-user key: /setkey serpapi <key> (free 100 searches/mo). CUSTOMIZE q.
+  - name: Google Jobs (US)
+    provider: serpapi
+    q: "software engineer"
+    location: "United States"
+    max_pages: 1
+    enabled: true
+    notes: "LinkedIn/Indeed/etc. via Google Jobs — needs SERPAPI key"
+  - name: Google Jobs (Canada)
+    provider: serpapi
+    q: "software engineer"
+    location: "Canada"
+    max_pages: 1
+    enabled: true
+    notes: "LinkedIn/Indeed/etc. via Google Jobs — needs SERPAPI key"
+
   # Generic schema.org JSON-LD harvester — point at ANY careers page that
   # embeds JobPosting markup (what Google for Jobs reads). One entry per page.
   - name: Example JSON-LD company   # CUSTOMIZE or disable

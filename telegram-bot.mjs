@@ -850,26 +850,35 @@ async function handleContact(chatId, argstr) {
 // ---------------------------------------------------------------------------
 // Hunter.io key (per-user) — set + usage
 // ---------------------------------------------------------------------------
-async function handleSetKey(chatId, rawKey) {
+async function handleSetKey(chatId, argstr) {
   const { opts } = userCtx(chatId);
-  // Hunter keys are hex; strip anything else (also neutralizes shell metachars).
-  const key = String(rawKey || '').replace(/[^A-Za-z0-9]/g, '');
+  const tokens = String(argstr || '').trim().split(/\s+/).filter(Boolean);
+  let service = 'hunter';
+  let rawKey = tokens[0] || '';
+  if (['hunter', 'serpapi'].includes((tokens[0] || '').toLowerCase())) {
+    service = tokens[0].toLowerCase();
+    rawKey = tokens[1] || '';
+  }
+  const key = rawKey.replace(/[^A-Za-z0-9]/g, ''); // keys are alnum — also blocks shell metachars
   if (key.length < 20) {
     await bot.sendMessage(chatId,
-      'Usage: /setkey <your Hunter.io API key>\n\nGet a free key (50 email lookups/month) at hunter.io → sign up → API. Each family member uses their own key.');
+      'Usage:\n/setkey hunter <key> — verify recruiter emails (hunter.io, 50/mo free)\n' +
+      '/setkey serpapi <key> — Google Jobs (LinkedIn/Indeed/etc.) via serpapi.com (100/mo free)\n\n' +
+      'Each family member uses their own key. (\`/setkey <key>\` alone assumes Hunter.)');
     return;
   }
-  await bot.sendMessage(chatId, '🔑 Validating your Hunter.io key...');
+  await bot.sendMessage(chatId, `🔑 Validating your ${service} key...`);
   try {
-    const { stdout } = await execAsync(`${script('find-contact-email.mjs')} --set-key ${q(key)}`, opts);
-    if (parseMarker(stdout, 'HUNTER_SAVED') === 'yes') {
-      const used = parseMarker(stdout, 'HUNTER_USED');
-      const limit = parseMarker(stdout, 'HUNTER_LIMIT');
-      await bot.sendMessage(chatId,
-        `✅ Hunter.io key saved — *${used}/${limit}* searches used this month.\n/contact will now verify emails (and I'll show your remaining credits each time).`,
-        { parse_mode: 'Markdown' });
+    const { stdout } = await execAsync(`${script('set-key.mjs')} ${service} ${q(key)}`, opts);
+    if (parseMarker(stdout, 'KEY_SAVED') === 'yes') {
+      const used = parseMarker(stdout, 'KEY_USED');
+      const limit = parseMarker(stdout, 'KEY_LIMIT');
+      const note = service === 'serpapi'
+        ? 'Your next /scan will also pull Google Jobs (LinkedIn, Indeed, Greenhouse, …).'
+        : '/contact will now verify recruiter emails.';
+      await bot.sendMessage(chatId, `✅ ${service} key saved — ${used}/${limit} used this month.\n${note}`);
     } else {
-      await bot.sendMessage(chatId, '❌ Hunter.io rejected that key. Double-check it (hunter.io → API) and try /setkey again.');
+      await bot.sendMessage(chatId, `❌ ${service} rejected that key. Double-check it and try /setkey again.`);
     }
   } catch (err) {
     console.error(`[${chatId}] setkey error:`, err.message);
@@ -880,11 +889,11 @@ async function handleSetKey(chatId, rawKey) {
 async function handleCredits(chatId) {
   const { opts } = userCtx(chatId);
   try {
-    const { stdout } = await execAsync(`${script('find-contact-email.mjs')} --credits`, opts);
-    const line = stdout.split('\n').find((l) => /Hunter|No Hunter/i.test(l)) || 'No Hunter.io key on file.';
-    await bot.sendMessage(chatId, line.replace(/^[^\w]*/, '').trim());
+    const { stdout } = await execAsync(`${script('set-key.mjs')} --credits`, opts);
+    const lines = stdout.split('\n').filter((l) => /used this month|No API keys/i.test(l));
+    await bot.sendMessage(chatId, lines.length ? lines.map((l) => l.trim()).join('\n') : 'No API keys on file yet — /setkey to add one.');
   } catch {
-    await bot.sendMessage(chatId, '⚠️ Could not read Hunter.io usage right now.');
+    await bot.sendMessage(chatId, '⚠️ Could not read API usage right now.');
   }
 }
 
@@ -921,8 +930,8 @@ async function handleHelp(chatId) {
     `/contact <name> [at company] — find a contact's email + draft outreach\n\n` +
     `*Setup:*\n` +
     `/setcv — import/replace your resume\n` +
-    `/setkey <key> — your Hunter.io key (verify contact emails, 50/mo)\n` +
-    `/credits — Hunter.io searches used this month\n` +
+    `/setkey hunter|serpapi <key> — your API keys (email verify · Google Jobs)\n` +
+    `/credits — API searches used this month\n` +
     `/whoami — your id + data root\n` +
     `/diag — server health check\n\n` +
     `_I prepare everything but never submit applications — you stay in control._`,

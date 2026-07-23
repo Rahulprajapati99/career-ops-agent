@@ -343,6 +343,7 @@ const USER_PATHS = [
   'geo-policy.mjs',
   'find-contact-email.mjs',
   'gemini-email.mjs',
+  'set-key.mjs',
   'user-env.mjs',
   'run-as-user.mjs',
   'scaffold-user.mjs',
