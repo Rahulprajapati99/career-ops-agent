@@ -618,11 +618,14 @@ async function handleJobs(chatId) {
     await bot.sendMessage(chatId, '📭 No pending jobs in your pipeline — run /scan to discover new ones.');
     return;
   }
-  let msg = `🗂 *Your pipeline — ${rows.length} pending job(s):*\n\n`;
-  for (const row of rows.slice(-12).reverse()) {
+  // Pipeline is already priority-ordered by geo-policy (remote first), so show
+  // the TOP rows rather than the tail.
+  let msg = `🗂 *Your pipeline — ${rows.length} matched job(s)* (remote first):\n\n`;
+  for (const row of rows.slice(0, 12)) {
     const parts = row.replace(/^- \[ \]\s*/, '').split('|').map((s) => s.trim());
     const [url, company, title, location] = parts;
-    msg += `🏢 *${company || '?'}* — ${title || '?'}\n`;
+    const remoteTag = /\bremote\b|anywhere|worldwide/i.test(location || '') ? ' 🏠' : '';
+    msg += `🏢 *${company || '?'}* — ${title || '?'}${remoteTag}\n`;
     if (location) msg += `   📍 ${location}\n`;
     if (url) msg += `   ${url}\n`;
     msg += '\n';
@@ -637,9 +640,23 @@ async function handleScan(chatId) {
   try {
     const { stdout } = await execAsync(`${script('scan.mjs')}`, { ...opts, timeout: 600_000 });
     const added = stdout.match(/(\d+)\s+new/i)?.[1];
-    const tail = stdout.trim().split('\n').slice(-25).join('\n');
+
+    // Apply the Canadian-worker geography policy (all Canada + US-remote +
+    // US-on-site only at visa sponsors) to the freshly scanned pipeline.
+    let geoLine = '';
+    try {
+      const { stdout: geo } = await execAsync(`${script('geo-policy.mjs')} --json`, opts);
+      const g = JSON.parse(geo.slice(geo.indexOf('{'), geo.lastIndexOf('}') + 1));
+      const usOnsite = g.reasons?.['US on-site (excluded)'] || 0;
+      geoLine = `\n🌎 Geo-policy: ${g.kept} kept — remote first, then Canada. ${g.dropped} filtered` +
+        (usOnsite ? ` (${usOnsite} US on-site)` : '') + '.';
+    } catch (geoErr) {
+      console.error(`[${chatId}] geo-policy error (non-fatal):`, geoErr.message);
+    }
+
+    const tail = stdout.trim().split('\n').slice(-22).join('\n');
     await bot.sendMessage(chatId,
-      `🔍 *Scan complete.*${added ? ` ${added} new job(s) added.` : ''}\n\n\`\`\`\n${tail.slice(0, 3000)}\n\`\`\`\n\nUse /jobs to browse them.`,
+      `🔍 *Scan complete.*${added ? ` ${added} new job(s) found.` : ''}${geoLine}\n\n\`\`\`\n${tail.slice(0, 2800)}\n\`\`\`\n\nUse /jobs to browse what matched.`,
       { parse_mode: 'Markdown' });
   } catch (error) {
     console.error(`[${chatId}] scan error:`, error);

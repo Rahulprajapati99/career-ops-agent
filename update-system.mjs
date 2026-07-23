@@ -340,6 +340,7 @@ const USER_PATHS = [
   'cv-import.mjs',
   'ats-match.mjs',
   'jd-fetch.mjs',
+  'geo-policy.mjs',
   'user-env.mjs',
   'run-as-user.mjs',
   'scaffold-user.mjs',

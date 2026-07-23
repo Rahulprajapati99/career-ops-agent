@@ -28,33 +28,34 @@ title_filter:
     - volunteer
     - intern
 
-# ── Location filter — US + Canada focus ───────────────────────────────────
+# ── Location filter (coarse) ──────────────────────────────────────────────
+# The real geography policy (all Canada + US-remote + US-on-site-only-for-visa-
+# sponsors) is enforced by geo-policy.mjs AFTER the scan — it distinguishes
+# remote from on-site and checks visa sponsorship, which this keyword filter
+# cannot. This block only trims clearly-foreign postings early.
 location_filter:
-  always_allow:
-    - "United States"
-    - "Canada"
-  allow:
-    - "Remote"
-    - "United States"
-    - "Canada"
-    - "USA"
-    - "Toronto"
-    - "Vancouver"
-    - "Montreal"
-    - "Calgary"
-    - "Ottawa"
-    - "New York"
-    - "San Francisco"
-    - "Seattle"
-    - "Austin"
-    - "Boston"
-    - "Chicago"
   block:
-    - "India"        # flip when the India toggle (below) is enabled
+    - "India"
+    - "Bengaluru"
+    - "Bangalore"
+    - "Hyderabad"
+    - "Mumbai"
+    - "Pune"
+    - "Chennai"
+    - "Gurgaon"
+    - "Gurugram"
+    - "Noida"
     - "United Kingdom"
     - "Germany"
+    - "France"
+    - "Netherlands"
+    - "Ireland"
     - "Poland"
     - "China"
+    - "Singapore"
+    - "Australia"
+    - "Philippines"
+    - "Brazil"
 
 # ── Aggregator / board feeds ──────────────────────────────────────────────
 job_boards:
@@ -99,12 +100,31 @@ job_boards:
     enabled: true
     notes: "US-heavy curated board — zero-auth"
 
-  # Himalayas — remote-first roles (US/CA-friendly). No key needed.
+  # Remote-first boards — every posting is remote, so they reliably feed the
+  # "US/North-America remote" side of the geo-policy. Zero-auth, no key.
   - name: Himalayas
     careers_url: https://himalayas.app/jobs
     provider: himalayas
     enabled: true
     notes: "Remote roles — zero-auth"
+
+  - name: Remotive
+    careers_url: https://remotive.com/remote-jobs
+    provider: remotive
+    enabled: true
+    notes: "Remote tech board — zero-auth"
+
+  - name: RemoteOK
+    careers_url: https://remoteok.com
+    provider: remoteok
+    enabled: true
+    notes: "Remote tech board — zero-auth"
+
+  - name: We Work Remotely
+    careers_url: https://weworkremotely.com
+    provider: weworkremotely
+    enabled: true
+    notes: "Remote board — zero-auth"
 
   # Generic schema.org JSON-LD harvester — point at ANY careers page that
   # embeds JobPosting markup (what Google for Jobs reads). One entry per page.

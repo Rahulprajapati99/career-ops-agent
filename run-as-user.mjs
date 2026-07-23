@@ -27,6 +27,15 @@ import { join, resolve, relative, isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { REPO_ROOT, userRootFor, buildUserEnv } from './user-env.mjs';
 
+// Load the repo-root .env so CLI and cron invocations get the same secrets the
+// long-running bot process already has (GEMINI_API_KEY, ADZUNA_APP_ID/KEY, …).
+// Without this, spawning a script with cwd=users/<id>/ makes the child's own
+// dotenv look in the user folder (no .env there) and API providers fail.
+try {
+  const { config } = await import('dotenv');
+  config({ path: join(REPO_ROOT, '.env') });
+} catch { /* dotenv optional */ }
+
 /**
  * Resolve a script reference to an absolute path inside the repo root.
  * Rejects anything that escapes the repo (defense against injected paths).
