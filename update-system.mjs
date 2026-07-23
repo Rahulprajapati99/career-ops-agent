@@ -341,6 +341,7 @@ const USER_PATHS = [
   'ats-match.mjs',
   'jd-fetch.mjs',
   'geo-policy.mjs',
+  'find-contact-email.mjs',
   'user-env.mjs',
   'run-as-user.mjs',
   'scaffold-user.mjs',
