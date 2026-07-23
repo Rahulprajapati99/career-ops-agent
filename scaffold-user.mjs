@@ -84,6 +84,20 @@ export function scaffoldUser(userId, opts = {}) {
   seed(join(REPO_ROOT, 'templates', 'portals.family.yml'), join(root, 'portals.yml'))
     || seed(join(REPO_ROOT, 'templates', 'portals.example.yml'), join(root, 'portals.yml'));
 
+  // Seed an empty tracker — merge-tracker.mjs skips silently when
+  // data/applications.md is absent, so without this a new user's evaluations
+  // would never accumulate into a tracker.
+  const trackerPath = join(root, 'data', 'applications.md');
+  if (!existsSync(trackerPath)) {
+    writeFileSync(trackerPath, [
+      '# Applications Tracker',
+      '',
+      '| # | Date | Company | Role | Score | Status | PDF | Report | Notes |',
+      '|---|------|---------|------|-------|--------|-----|--------|-------|',
+      '',
+    ].join('\n'));
+  }
+
   if (!existsSync(join(root, 'cv.md'))) {
     writeFileSync(join(root, 'cv.md'), [
       '# Your CV',

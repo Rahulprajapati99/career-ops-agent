@@ -21,7 +21,7 @@
  */
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 // ---------------------------------------------------------------------------
@@ -40,14 +40,18 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 // Paths
 // ---------------------------------------------------------------------------
 const ROOT = dirname(fileURLToPath(import.meta.url));
+// User layer honors CAREER_OPS_USER_ROOT (multi-user); system files stay ROOT.
+const USER_ROOT = process.env.CAREER_OPS_USER_ROOT
+  ? resolve(process.env.CAREER_OPS_USER_ROOT)
+  : ROOT;
 
 const PATHS = {
   shared:   join(ROOT, 'modes', '_shared.md'),
   pdf:      join(ROOT, 'modes', 'pdf.md'),
-  cv:       join(ROOT, 'cv.md'),
-  profile:  join(ROOT, 'config', 'profile.yml'),
+  cv:       join(USER_ROOT, 'cv.md'),
+  profile:  join(USER_ROOT, 'config', 'profile.yml'),
   template: join(ROOT, 'templates', 'cv-template.html'),
-  output:   join(ROOT, 'output'),
+  output:   join(USER_ROOT, 'output'),
 };
 
 // ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@
  */
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 try {
@@ -32,6 +32,10 @@ try {
 } catch { /* dotenv optional */ }
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
+// User layer honors CAREER_OPS_USER_ROOT (multi-user); system files stay ROOT.
+const USER_ROOT = process.env.CAREER_OPS_USER_ROOT
+  ? resolve(process.env.CAREER_OPS_USER_ROOT)
+  : ROOT;
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -39,8 +43,8 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const PATHS = {
   shared:  join(ROOT, 'modes', '_shared.md'),
   oferta:  join(ROOT, 'modes', 'oferta.md'),
-  cv:      join(ROOT, 'cv.md'),
-  reports: join(ROOT, 'reports'),
+  cv:      join(USER_ROOT, 'cv.md'),
+  reports: join(USER_ROOT, 'reports'),
 };
 
 // ---------------------------------------------------------------------------

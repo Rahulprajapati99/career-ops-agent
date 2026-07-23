@@ -29,7 +29,7 @@
  */
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync, readdirSync } from 'fs';
-import { join, dirname } from 'path';
+import { join, dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { execFileSync } from 'child_process';
 
@@ -49,6 +49,13 @@ import { GoogleGenerativeAI } from '@google/generative-ai';
 // Paths
 // ---------------------------------------------------------------------------
 const ROOT = dirname(fileURLToPath(import.meta.url));
+// User-data root: honors CAREER_OPS_USER_ROOT for multi-user setups where the
+// user layer (cv, profile, reports, tracker) lives outside the repo. Falls
+// back to the repo root, preserving single-user behavior unchanged. System
+// files (modes/, templates/, skills) stay anchored to ROOT — they are shared.
+const USER_ROOT = process.env.CAREER_OPS_USER_ROOT
+  ? resolve(process.env.CAREER_OPS_USER_ROOT)
+  : ROOT;
 
 const PATHS = {
   // Primary evaluation logic lives in these two mode files
@@ -56,12 +63,12 @@ const PATHS = {
   oferta:      join(ROOT, 'modes', 'oferta.md'),
   // Canonical skill path referenced in Issue #344
   evaluate:    join(ROOT, '.claude', 'skills', 'career-ops', 'SKILL.md'),
-  cv:          join(ROOT, 'cv.md'),
-  profile:     join(ROOT, 'modes', '_profile.md'),
-  profileYml:  join(ROOT, 'config', 'profile.yml'),
-  reports:     join(ROOT, 'reports'),
-  tracker:     join(ROOT, 'data', 'applications.md'),
-  trackerAdditions: join(ROOT, 'batch', 'tracker-additions'),
+  cv:          join(USER_ROOT, 'cv.md'),
+  profile:     join(USER_ROOT, 'modes', '_profile.md'),
+  profileYml:  join(USER_ROOT, 'config', 'profile.yml'),
+  reports:     join(USER_ROOT, 'reports'),
+  tracker:     join(USER_ROOT, 'data', 'applications.md'),
+  trackerAdditions: join(USER_ROOT, 'batch', 'tracker-additions'),
 };
 
 // ---------------------------------------------------------------------------
@@ -522,9 +529,16 @@ ${evaluationText.replace(/---SCORE_SUMMARY---[\s\S]*?---END_SUMMARY---/, '').tri
   if (reportSaved) {
     try {
       const mergeOutput = execFileSync(process.execPath, [join(ROOT, 'merge-tracker.mjs')], {
-        cwd: ROOT,
+        cwd: USER_ROOT,
         encoding: 'utf-8',
         stdio: ['ignore', 'pipe', 'pipe'],
+        // Bind the merge to THIS user's tracker + additions, so a standalone
+        // run (CAREER_OPS_USER_ROOT only) merges the right files too.
+        env: {
+          ...process.env,
+          CAREER_OPS_TRACKER: PATHS.tracker,
+          CAREER_OPS_ADDITIONS: PATHS.trackerAdditions,
+        },
       });
       if (mergeOutput.trim()) console.log(mergeOutput.trim());
       console.log('📊  Tracker merged into data/applications.md.');

@@ -70,5 +70,6 @@ export function buildUserEnv(userRoot) {
     CAREER_OPS_PROFILE: join(root, 'config', 'profile.yml'),
     CAREER_OPS_TRACKER: join(root, 'data', 'applications.md'),
     CAREER_OPS_REPORTS_DIR: join(root, 'reports'),
+    CAREER_OPS_ADDITIONS: join(root, 'batch', 'tracker-additions'),
   };
 }

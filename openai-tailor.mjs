@@ -17,7 +17,7 @@
  */
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'fs';
-import { join, dirname, basename } from 'path';
+import { join, dirname, basename, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import yaml from 'js-yaml';
 
@@ -27,6 +27,10 @@ try {
 } catch { /* dotenv optional */ }
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
+// User layer honors CAREER_OPS_USER_ROOT (multi-user); system files stay ROOT.
+const USER_ROOT = process.env.CAREER_OPS_USER_ROOT
+  ? resolve(process.env.CAREER_OPS_USER_ROOT)
+  : ROOT;
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -34,10 +38,10 @@ const ROOT = dirname(fileURLToPath(import.meta.url));
 const PATHS = {
   shared:   join(ROOT, 'modes', '_shared.md'),
   pdfMode:  join(ROOT, 'modes', 'pdf.md'),
-  cv:       join(ROOT, 'cv.md'),
-  profile:  join(ROOT, 'config', 'profile.yml'),
+  cv:       join(USER_ROOT, 'cv.md'),
+  profile:  join(USER_ROOT, 'config', 'profile.yml'),
   template: join(ROOT, 'templates', 'cv-template.html'),
-  output:   join(ROOT, 'output'),
+  output:   join(USER_ROOT, 'output'),
 };
 
 // ---------------------------------------------------------------------------
