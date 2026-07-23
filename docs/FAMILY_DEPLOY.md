@@ -36,7 +36,7 @@ Then append the Family Edition variables to `.env`:
 cat >> .env <<'EOF'
 # — Family Edition —
 TELEGRAM_ALLOWED_IDS=8772217091          # add the other 3 ids comma-separated later
-ADZUNA_APP_KEY=REDACTED_ADZUNA_APP_KEY_ROTATED
+ADZUNA_APP_KEY=<copy from the PC's career-ops-agent/.env — never commit the value>
 # ADZUNA_APP_ID=<get from https://developer.adzuna.com dashboard>
 EOF
 ```
