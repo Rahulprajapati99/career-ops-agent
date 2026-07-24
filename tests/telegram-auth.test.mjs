@@ -11,7 +11,10 @@ import { createHmac, createHash } from 'crypto';
 
 console.log('\nTelegram login + sessions — lib/telegram-auth.mjs (Phase 7)');
 
-const BOT_TOKEN = '1234567890:AAFakeTokenForTestsOnly_NotReal';
+// Only 5 digits before the colon (a real Telegram token has 8-10), and an
+// unmistakable FAKE/NOT-REAL body, so no secret scanner reads it as a token.
+// Any string works — it is only HMAC key material for the widget-signing math.
+const BOT_TOKEN = '00000:FAKE-telegram-bot-token-for-tests-not-real';
 
 /** Build a widget payload signed the way Telegram signs it. */
 function signWidget(fields, token = BOT_TOKEN) {

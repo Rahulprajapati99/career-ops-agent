@@ -98,7 +98,7 @@ try {
   }
 
   // --- secret redaction -----------------------------------------------------
-  const SECRET = 'AQ.Ex4mpl3-secret_value.123';
+  const SECRET = 'EXAMPLE-fake-secret-not-a-real-key-000';
   const leaky = stubModel([`boom with key=${SECRET} inside`, `boom with key=${SECRET} inside`, `boom with key=${SECRET} inside`]);
   try {
     await callModelWithRetry(leaky, 'p', { maxRetries: 1, apiKey: SECRET, log: silent });
