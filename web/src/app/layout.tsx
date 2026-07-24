@@ -3,6 +3,14 @@ import { inter, instrumentSerif, instrumentSerifItalic } from "@/lib/fonts";
 import { AppShell } from "@/components/app-shell";
 import "./globals.css";
 
+// Multi-user gateway (web-gateway.mjs): each request is served by a per-user
+// process whose data root (CAREER_OPS_ROOT) is set at RUNTIME. Nothing may be
+// statically prerendered — at `next build` time CAREER_OPS_ROOT is unset, so a
+// static page bakes the build machine's empty data and every user then sees a
+// blank dashboard. Forcing dynamic rendering makes every page re-read the
+// signed-in user's data on each request.
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "career-ops — official web experience",
   description: "The official, local-first web experience for career-ops.",
