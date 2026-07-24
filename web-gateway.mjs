@@ -252,7 +252,13 @@ const server = http.createServer(async (req, res) => {
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
-const isMain = process.argv[1]?.endsWith('web-gateway.mjs') && !process.env.CAREER_OPS_GATEWAY_TEST;
+// Run the server unless a test imported this module to borrow its pure helpers
+// (the test sets CAREER_OPS_GATEWAY_TEST=1 to keep it from opening a port).
+// We deliberately do NOT gate on process.argv[1] / import.meta "am I the entry
+// point?" detection: under pm2's ESM fork that check silently returns false, so
+// server.listen() never runs — the process shows "online" but binds nothing and
+// logs nothing. Keying off an explicit opt-out env is reliable in every launcher.
+const isMain = !process.env.CAREER_OPS_GATEWAY_TEST;
 if (isMain) {
   const problems = [];
   if (!TOKEN) problems.push('TELEGRAM_BOT_TOKEN missing — logins cannot be verified.');
