@@ -127,6 +127,37 @@ try {
   setIndia(true, bare);
   if (readIndiaState(bare).enabled) pass('toggle works on a portals.yml with no India entry yet');
   else fail('toggle failed on a minimal config');
+
+  // --- auto-add a source when none is parseable (the live bug) --------------
+  // A portals.yml with a working Adzuna Canada entry but NO India entry: /india
+  // on must ADD a correctly-indented India source, not just flip a flag.
+  const noIndia = join(dir, 'no-india.yml');
+  writeFileSync(noIndia,
+    'title_filter:\n  positive:\n    - qa\n\n' +
+    'job_boards:\n' +
+    '  - name: Adzuna Canada\n    provider: adzuna\n    country: ca\n    what: "qa"\n    enabled: true\n');
+  setIndia(true, noIndia);
+  const added = readIndiaState(noIndia);
+  if (added.portalEntries === 1 && added.enabledPortals === 1)
+    pass('/india on ADDS a parseable Adzuna India source when none exists');
+  else fail(`auto-add failed: ${JSON.stringify(added)}`);
+
+  // The added entry must be valid YAML that validate-portals accepts, and the
+  // Canada entry must be untouched.
+  const yaml2 = (await import('js-yaml')).default;
+  const parsed = yaml2.load(readFileSync(noIndia, 'utf-8'));
+  const inEntry = (parsed.job_boards || []).find((e) => e.country === 'in');
+  const caEntry = (parsed.job_boards || []).find((e) => e.country === 'ca');
+  if (inEntry && inEntry.provider === 'adzuna' && inEntry.enabled === true) pass('added India entry parses with the right fields');
+  else fail(`added entry malformed: ${JSON.stringify(inEntry)}`);
+  if (caEntry && caEntry.enabled === true) pass('the existing Canada entry is left intact');
+  else fail('auto-add disturbed the Canada entry');
+
+  // Idempotent: a second /india on must NOT add a duplicate.
+  setIndia(true, noIndia);
+  const twice = yaml2.load(readFileSync(noIndia, 'utf-8')).job_boards.filter((e) => e.country === 'in');
+  if (twice.length === 1) pass('a second /india on does not duplicate the India source');
+  else fail(`duplicate India entries after second toggle: ${twice.length}`);
 } catch (err) {
   fail(`india-toggle test crashed: ${err.message}`);
 }

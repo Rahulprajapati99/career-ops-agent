@@ -71,6 +71,64 @@ export function readIndiaState(portalsPath = PORTALS) {
 }
 
 /**
+ * Ensure portals.yml has an ACTIVE Adzuna India source. If yaml already sees a
+ * `country: in` entry that isn't disabled, do nothing. Otherwise add one by
+ * cloning the indentation of an existing Adzuna entry (Canada or US) — hand-
+ * pasted India entries are the #1 way to get the nesting subtly wrong so yaml
+ * never treats them as a job source. Text insertion, so comments survive.
+ *
+ * @param {string} text
+ * @returns {{text: string, added: boolean}}
+ */
+export function ensureIndiaSource(text) {
+  try {
+    const cfg = yaml.load(text) || {};
+    // If yaml already sees ANY India entry (even disabled), leave it — setIndia's
+    // enable pass will turn it on. Only a total absence (or a hand-pasted entry
+    // mis-indented so yaml can't see it) triggers an add.
+    const hasEntry = ENTRY_KEYS
+      .flatMap((k) => (Array.isArray(cfg[k]) ? cfg[k] : []))
+      .some((e) => String(e?.country || '').toLowerCase() === 'in');
+    if (hasEntry) return { text, added: false };
+  } catch { /* malformed → add a clean entry anyway */ }
+
+  const lines = text.split('\n');
+  let anchorIdx = -1;
+  let itemIndent = '  ';
+  for (const cc of ['ca', 'us']) {
+    const ci = lines.findIndex((l) => new RegExp(`^\\s*country:\\s*${cc}\\s*$`, 'i').test(l));
+    if (ci === -1) continue;
+    for (let i = ci; i >= 0; i--) {
+      const m = lines[i].match(/^(\s*)-\s*name:/i);
+      if (m) { anchorIdx = i; itemIndent = m[1]; break; }
+    }
+    if (anchorIdx !== -1) break;
+  }
+
+  const p = `${itemIndent}  `;
+  const block = [
+    `${itemIndent}- name: Adzuna India`,
+    `${p}careers_url: https://www.adzuna.in`,
+    `${p}provider: adzuna`,
+    `${p}country: in`,
+    `${p}what: "quality assurance"`,
+    `${p}max_days_old: 7`,
+    `${p}max_pages: 3`,
+    `${p}enabled: true`,
+    '',
+  ];
+
+  if (anchorIdx !== -1) {
+    lines.splice(anchorIdx, 0, ...block);
+  } else {
+    const listIdx = lines.findIndex((l) => /^(job_boards|companies|portals):\s*$/.test(l));
+    if (listIdx !== -1) lines.splice(listIdx + 1, 0, ...block);
+    else lines.push('', 'job_boards:', ...block);
+  }
+  return { text: lines.join('\n'), added: true };
+}
+
+/**
  * Flip the toggle by editing the YAML text.
  *
  * Text edits, not a yaml.dump round-trip: portals.yml is heavily commented and
@@ -85,6 +143,14 @@ export function setIndia(on, portalsPath = PORTALS) {
   if (!existsSync(portalsPath)) throw new Error(`portals.yml not found at ${portalsPath}`);
   let text = readFileSync(portalsPath, 'utf-8');
   const changed = [];
+
+  // Turning the policy on with no working India source searches nothing — add
+  // one for the user rather than leave them hand-editing YAML indentation.
+  if (on) {
+    const r = ensureIndiaSource(text);
+    text = r.text;
+    if (r.added) changed.push('added an Adzuna India source (cloned an existing entry)');
+  }
 
   // 1. The geo-policy opt-in.
   if (/^include_india:.*$/m.test(text)) {
