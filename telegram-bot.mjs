@@ -883,7 +883,9 @@ async function handleSetKey(chatId, argstr) {
         gemini: 'Evaluations, tailoring and cover letters now run on YOUR own daily quota instead of the shared one.',
         hunter: '/contact will now verify recruiter emails.',
       }[service];
-      await bot.sendMessage(chatId, `✅ ${service} key saved — ${used}/${limit} used this month.\n${note}`);
+      // Gemini exposes no remaining-quota API, so it reports no usage numbers.
+      const quota = (used && used !== 'null' && limit) ? ` — ${used}/${limit} used this month` : '';
+      await bot.sendMessage(chatId, `✅ ${service} key saved${quota}.\n${note}`);
     } else {
       await bot.sendMessage(chatId, `❌ ${service} rejected that key. Double-check it and try /setkey again.`);
     }

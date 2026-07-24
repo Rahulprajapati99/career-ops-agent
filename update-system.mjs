@@ -344,6 +344,7 @@ const USER_PATHS = [
   'find-contact-email.mjs',
   'gemini-email.mjs',
   'set-key.mjs',
+  'smoke-test.mjs',
   'user-env.mjs',
   'run-as-user.mjs',
   'scaffold-user.mjs',
