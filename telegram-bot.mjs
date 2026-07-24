@@ -73,6 +73,33 @@ if (!process.env.GEMINI_API_KEY) {
 const bot = new TelegramBot(token, { polling: true });
 console.log(`🤖 Career-Ops Family Bot online — serving ${ALLOWED_IDS.size} allowlisted user(s).`);
 
+/**
+ * Send a Markdown message that degrades gracefully to plain text.
+ *
+ * Scanned job titles, company names, and especially Adzuna URLs (which contain
+ * "_", e.g. `se=_qT4…`) routinely carry characters that break legacy-Markdown
+ * entity parsing — Telegram then rejects the whole message with
+ * "400 Bad Request: can't parse entities: Can't find end of the entity…",
+ * which surfaced as "Something went wrong" on random /jobs pages. Rather than
+ * audit every interpolation, we catch that specific failure and resend the SAME
+ * content without formatting (stripping only our own * and ` markers). Content
+ * always beats bold. Use this for any message that interpolates external data.
+ *
+ * @param {number|string} chatId
+ * @param {string} text - Markdown text.
+ * @param {object} [extra] - Extra sendMessage options (reply_markup, etc.); do NOT pass parse_mode.
+ */
+async function sendMd(chatId, text, extra = {}) {
+  try {
+    return await bot.sendMessage(chatId, text, { parse_mode: 'Markdown', ...extra });
+  } catch (err) {
+    if (/parse entities|can't find end|can't parse/i.test(String(err?.message || err))) {
+      return bot.sendMessage(chatId, String(text).replace(/[*`]/g, ''), extra);
+    }
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Per-user routing — every script runs inside users/<id>/
 // ---------------------------------------------------------------------------
@@ -276,8 +303,7 @@ async function evaluateJd(chatId, { url = null, pastedText = null }) {
       ? `\n\n✨ *High match!* Tailor your resume for this role?`
       : `\n\n📉 Low match score — tailor anyway?`;
 
-    await bot.sendMessage(chatId, replyText, {
-      parse_mode: 'Markdown',
+    await sendMd(chatId, replyText, {
       reply_markup: {
         inline_keyboard: [[
           { text: '📄 Tailor My Resume', callback_data: 'tailor_yes' },
@@ -400,7 +426,7 @@ async function handleTailor(chatId, { force = false } = {}) {
         } else {
           atsMsg += '\n_(Missing terms are only added when your CV truly supports them — fabrication is blocked.)_';
         }
-        await bot.sendMessage(chatId, atsMsg, { parse_mode: 'Markdown' });
+        await sendMd(chatId, atsMsg);
       }
     } catch (atsErr) {
       console.error(`[${chatId}] ats-match error (non-fatal):`, atsErr.message);
@@ -517,7 +543,7 @@ async function handleApplyKit(chatId) {
     return handleTailor(chatId);
   }
 
-  await bot.sendMessage(chatId, `📦 Assembling your apply kit for *${state.company}*...`, { parse_mode: 'Markdown' });
+  await sendMd(chatId, `📦 Assembling your apply kit for *${state.company}*...`);
 
   // 1) Tailored CV (already exists)
   await bot.sendDocument(chatId, state.pdfPath, { caption: `1/3 📄 Tailored CV — ${state.company}` });
@@ -541,9 +567,8 @@ async function handleApplyKit(chatId) {
       const notes = stdout.trim();
       if (notes) {
         const via = prefillUrl !== state.url ? ` _(resolved the branded page to its Greenhouse board)_\n` : '';
-        await bot.sendMessage(chatId,
-          `3/3 📋 *ATS prefill notes:*${via}\n\`\`\`\n${notes.slice(0, 3300)}\n\`\`\``,
-          { parse_mode: 'Markdown' });
+        await sendMd(chatId,
+          `3/3 📋 *ATS prefill notes:*${via}\n\`\`\`\n${notes.slice(0, 3300)}\n\`\`\``);
       } else {
         await bot.sendMessage(chatId, '3/3 ℹ️ The ATS returned no prefill fields for this posting.');
       }
@@ -654,7 +679,7 @@ async function handleJobs(chatId, page = 1) {
   });
   if (p < pages) msg += `➡️ Send \`/jobs ${p + 1}\` for the next ${Math.min(PER_PAGE, rows.length - start - PER_PAGE)}.`;
   else if (pages > 1) msg += `_(end of list · \`/jobs 1\` to start over)_`;
-  await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown', disable_web_page_preview: true });
+  await sendMd(chatId, msg, { disable_web_page_preview: true });
 }
 
 async function handleScan(chatId) {
@@ -690,7 +715,7 @@ async function handleScan(chatId) {
       `Scanned ${found || '?'} postings · ${added || '0'} new.${geoLine}\n\n` +
       (kept ? `Send /jobs to browse your ${kept} matched job${kept === 1 ? '' : 's'} (remote first).` : 'Send /jobs to browse.') +
       (adzunaMissing ? '\n\n⚠️ Adzuna credentials missing on the server — add ADZUNA_APP_ID + ADZUNA_APP_KEY to .env for full US/Canada coverage.' : '');
-    await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+    await sendMd(chatId, msg);
   } catch (error) {
     console.error(`[${chatId}] scan error:`, error);
     await bot.sendMessage(chatId, '❌ Scan failed — check portals.yml in your data root and the bot logs.');
@@ -729,7 +754,7 @@ async function handleStatus(chatId, companyFilter) {
       msg += `   ${row.score || '?'}/5 · ${row.status || '?'} · ${row.date || ''}\n\n`;
     }
     if (rows.length > 15) msg += `_...and ${rows.length - 15} more_`;
-    await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown' });
+    await sendMd(chatId, msg);
   } catch (error) {
     // Tracker not synced — fall back to the raw file inside THIS user's root.
     const trackerPath = path.join(root, 'data', 'applications.md');
@@ -738,9 +763,8 @@ async function handleStatus(chatId, companyFilter) {
         .split('\n').filter((l) => l.startsWith('|') && !l.includes('---'));
       if (lines.length > 1) {
         const recent = lines.slice(Math.max(1, lines.length - 10)).join('\n');
-        await bot.sendMessage(chatId,
-          `📊 *Recent applications:*\n\n\`\`\`\n${recent.slice(0, 3300)}\n\`\`\``,
-          { parse_mode: 'Markdown' });
+        await sendMd(chatId,
+          `📊 *Recent applications:*\n\n\`\`\`\n${recent.slice(0, 3300)}\n\`\`\``);
         return;
       }
     }
@@ -768,7 +792,7 @@ async function handleApply(chatId, rawUrl) {
       { parse_mode: 'Markdown' });
     return;
   }
-  await bot.sendMessage(chatId, `⏳ Generating ATS prefill cheat-sheet for your *${state.company}* CV...`, { parse_mode: 'Markdown' });
+  await sendMd(chatId, `⏳ Generating ATS prefill cheat-sheet for your *${state.company}* CV...`);
   try {
     const prefillUrl = await resolveEmbeddedAtsUrl(applyUrl);
     const { stdout } = await execAsync(
