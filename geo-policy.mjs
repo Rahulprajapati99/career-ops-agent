@@ -25,6 +25,7 @@
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import yaml from 'js-yaml';
 
 const USER_ROOT = process.env.CAREER_OPS_USER_ROOT
   ? resolve(process.env.CAREER_OPS_USER_ROOT)
@@ -42,12 +43,17 @@ const US_RE = /\b(united states|u\.?s\.?a?\.?|u\.s\.)\b/i;
 // region tags ("Worldwide", "Anywhere", "USA Only", "Americas"), and synonyms.
 const REMOTE_RE = /\bremote\b|\bwfh\b|work[ -]?from[ -]?home|\banywhere\b|\bworldwide\b|\bglobal\b|\bdistributed\b|\btelecommute\b|\bvirtual\b|home[ -]?based|\b(?:us|usa|u\.s\.?)\s+only\b|\bnorth america\b|\bamericas\b/i;
 
-/** Classify a location string as 'CA' | 'US' | null (unknown/other). Exported. */
+// India (Phase 8 toggle). Major tech hubs + the country name; deliberately
+// checked BEFORE the two-letter code rule, since "IN" also means Indiana.
+const IN_RE = /\b(india|bengaluru|bangalore|hyderabad|mumbai|pune|chennai|gurgaon|gurugram|noida|kolkata|ahmedabad|delhi|kochi|coimbatore|indore|jaipur|thiruvananthapuram|trivandrum)\b/i;
+
+/** Classify a location string as 'CA' | 'US' | 'IN' | null (unknown/other). Exported. */
 export function detectCountry(location) {
   const loc = String(location || '');
   if (!loc.trim()) return null;
   const low = loc.toLowerCase();
   if (CA_RE.test(low)) return 'CA';
+  if (IN_RE.test(low)) return 'IN';
   if (US_RE.test(low)) return 'US';
   const codeMatch = loc.match(/,\s*([A-Za-z]{2})\b(?![A-Za-z.])/);
   if (codeMatch) {
@@ -61,18 +67,46 @@ export function detectCountry(location) {
 
 /**
  * Decide keep/drop + priority rank for one posting.
- * rank: 0 = remote (top), 1 = Canada on-site/hybrid, 2 = unknown location.
+ *
+ * rank: 0 = remote (top), 1 = Canada on-site/hybrid, 2 = unknown location,
+ *       3 = India on-site (only when the India toggle is on).
+ *
+ * @param {{title?: string, location?: string}} row
+ * @param {{includeIndia?: boolean}} [opts] - Phase 8 toggle. Off by default, so
+ *   the North-America-only policy is unchanged unless a user opts in.
  * @returns {{ keep: boolean, reason: string, rank: number }}
  */
-export function classifyRow({ title, location }) {
+export function classifyRow({ title, location }, { includeIndia = false } = {}) {
   const remote = REMOTE_RE.test(String(location || '')) || REMOTE_RE.test(String(title || ''));
   const country = detectCountry(location);
+  // An India-remote role is still an India role: without the toggle it must not
+  // slip in through the remote fast-path.
+  if (country === 'IN') {
+    if (!includeIndia) return { keep: false, reason: 'India (toggle off)', rank: 9 };
+    return { keep: true, reason: remote ? 'India (remote)' : 'India (on-site/hybrid)', rank: remote ? 0 : 3 };
+  }
   // Remote (Canada-remote, US-remote, or region/worldwide-remote) is top priority.
   if (remote) return { keep: true, reason: 'Remote', rank: 0 };
   if (country === 'CA') return { keep: true, reason: 'Canada (on-site/hybrid)', rank: 1 };
   if (country === 'US') return { keep: false, reason: 'US on-site (excluded)', rank: 9 };
   if (!String(location || '').trim()) return { keep: true, reason: 'Location unknown', rank: 2 };
   return { keep: false, reason: 'Outside North America', rank: 9 };
+}
+
+/**
+ * Whether this user opted into Indian postings (Phase 8).
+ * Lives in the user's own portals.yml, so each family member chooses
+ * independently and the default stays North-America-only.
+ *
+ * @param {string} [portalsPath]
+ * @returns {boolean}
+ */
+export function indiaEnabled(portalsPath) {
+  const p = portalsPath || process.env.CAREER_OPS_PORTALS || join(USER_ROOT, 'portals.yml');
+  try {
+    if (!existsSync(p)) return false;
+    return (yaml.load(readFileSync(p, 'utf-8')) || {}).include_india === true;
+  } catch { return false; }
 }
 
 /** Parse a pipeline `- [ ] url | company | title | location | posted: date` row. */
@@ -111,8 +145,9 @@ if (isMain) {
   const seen = new Set();
   let dropped = 0;
   let deduped = 0;
+  const includeIndia = indiaEnabled();
   for (const { line, row } of rows) {
-    const c = classifyRow(row);
+    const c = classifyRow(row, { includeIndia });
     reasons[c.reason] = (reasons[c.reason] || 0) + 1;
     if (!c.keep) { dropped += 1; continue; }
     // Dedup identical postings that arrive under different URLs (e.g. Adzuna's

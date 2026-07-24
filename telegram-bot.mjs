@@ -963,12 +963,92 @@ async function handleHelp(chatId) {
     `/contact <name> [at company] — find a contact's email + draft outreach\n\n` +
     `*Setup:*\n` +
     `/setcv — import/replace your resume\n` +
-    `/setkey hunter|serpapi <key> — your API keys (email verify · Google Jobs)\n` +
+    `/digest — your best-matching jobs now (/digest off to stop the daily push)\n` +
+    `/india on|off — include Indian postings (default: off)\n` +
+    `/setkey gemini|hunter|serpapi <key> — your API keys (AI quota · email verify · Google Jobs)\n` +
     `/credits — API searches used this month\n` +
     `/whoami — your id + data root\n` +
     `/diag — server health check\n\n` +
     `_I prepare everything but never submit applications — you stay in control._`,
     { parse_mode: 'Markdown' });
+}
+
+// ---------------------------------------------------------------------------
+// Daily digest (Phase 6) — matched jobs pushed on a schedule
+// ---------------------------------------------------------------------------
+/**
+ * /digest — preview today's matches now, or pause/resume the scheduled push.
+ * The cron job (daily-digest.mjs) is what sends it automatically; this is the
+ * on-demand view plus the opt-out, so a user is never stuck with a push they
+ * cannot turn off from the app they receive it in.
+ */
+async function handleDigest(chatId, argstr) {
+  const { root, opts } = userCtx(chatId);
+  const arg = String(argstr || '').trim().toLowerCase();
+  const { readState, writeState } = await import('./daily-digest.mjs');
+
+  if (arg === 'off' || arg === 'on') {
+    const state = readState(root);
+    writeState(root, { ...state, paused: arg === 'off' });
+    await bot.sendMessage(chatId, arg === 'off'
+      ? '🔕 Daily digest paused. Send /digest on to resume — /jobs still works.'
+      : '🔔 Daily digest resumed. You will get your matches each morning.');
+    return;
+  }
+
+  await bot.sendMessage(chatId, '🎯 Ranking your pipeline...');
+  try {
+    const { stdout } = await execAsync(`${script('match-jobs.mjs')} --json --top 5 --min-score 35`, opts);
+    const { jobs = [], matched = 0, total = 0 } = JSON.parse(stdout.slice(stdout.indexOf('{'), stdout.lastIndexOf('}') + 1));
+    if (jobs.length === 0) {
+      await bot.sendMessage(chatId, total === 0
+        ? 'No jobs in your pipeline yet — run /scan first.'
+        : `No strong matches among your ${total} scanned jobs. /jobs shows everything.`);
+      return;
+    }
+    const { renderDigest, digestKeyboard, readState: rs, writeState: ws } = await import('./daily-digest.mjs');
+    // Record the offered set so the Evaluate buttons resolve to the right URL.
+    ws(root, { ...rs(root), offered: jobs.map((j) => ({ url: j.url, title: j.title, company: j.company })) });
+    await bot.sendMessage(chatId, renderDigest(jobs, { totalMatched: matched }), {
+      reply_markup: digestKeyboard(jobs),
+      disable_web_page_preview: true,
+    });
+  } catch (error) {
+    console.error(`[${chatId}] digest error:`, error);
+    await bot.sendMessage(chatId, friendlyError(error));
+  }
+}
+
+/**
+ * /india [on|off] — Phase 8 geography toggle, per user.
+ * Off by default; one family member can search India without affecting anyone else.
+ */
+async function handleIndia(chatId, argstr) {
+  const { opts } = userCtx(chatId);
+  const arg = String(argstr || '').trim().toLowerCase();
+  const flag = arg === 'on' ? ' --on' : arg === 'off' ? ' --off' : '';
+  try {
+    const { stdout } = await execAsync(`${script('india-toggle.mjs')}${flag} --json`, opts);
+    const state = JSON.parse(stdout.slice(stdout.indexOf('{'), stdout.lastIndexOf('}') + 1));
+    if (!state.exists) {
+      await bot.sendMessage(chatId, 'No portals.yml yet — send /scan once to set your search up.');
+      return;
+    }
+    await bot.sendMessage(chatId, state.enabled
+      ? '🇮🇳 Indian postings are ON.\n\nYour next /scan will include India alongside Canada and US-remote roles. Send /india off to go back to North America only.'
+      : '🇨🇦 Indian postings are OFF — Canada + US-remote only.\n\nSend /india on to include India.');
+  } catch (error) {
+    console.error(`[${chatId}] india toggle error:`, error);
+    await bot.sendMessage(chatId, friendlyError(error));
+  }
+}
+
+/** Resolve a `digest_eval:<n>` button press back to the URL it offered. */
+function digestJobAt(root, index) {
+  try {
+    const state = JSON.parse(fs.readFileSync(path.join(root, 'data', 'digest-state.json'), 'utf-8'));
+    return state.offered?.[index] || null;
+  } catch { return null; }
 }
 
 async function handleWhoami(chatId) {
@@ -1078,6 +1158,8 @@ bot.on('message', async (msg) => {
       return await handleSetKey(chatId, text.replace('/setkey', '').trim());
     }
     if (text === '/credits') return await handleCredits(chatId);
+    if (text.startsWith('/digest')) return await handleDigest(chatId, text.replace('/digest', ''));
+    if (text.startsWith('/india')) return await handleIndia(chatId, text.replace('/india', ''));
     if (text.startsWith('/')) {
       return await bot.sendMessage(chatId, '❓ Unknown command — /help lists everything.');
     }
@@ -1121,6 +1203,18 @@ bot.on('callback_query', async (query) => {
   if (query.data === 'tailor_skip') {
     await bot.sendMessage(chatId,
       '👍 Skipped — the evaluation is saved. /tailor works any time before your next evaluation.');
+  }
+  // Digest "Evaluate" button: callback_data is capped at 64 bytes, so it carries
+  // the offer index and the URL is resolved from the user's own ledger.
+  if (query.data?.startsWith('digest_eval:')) {
+    const { root } = userCtx(chatId);
+    const job = digestJobAt(root, Number(query.data.split(':')[1]));
+    if (!job?.url) {
+      await bot.sendMessage(chatId, 'That job is no longer in your latest digest — send /digest for a fresh list.');
+      return;
+    }
+    await bot.sendMessage(chatId, `🔍 Evaluating: ${job.title} — ${job.company}`);
+    return evaluateJd(chatId, { url: job.url });
   }
 });
 

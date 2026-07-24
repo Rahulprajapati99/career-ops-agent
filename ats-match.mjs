@@ -54,6 +54,17 @@ export const SKILL_HINTS = [
   'bigquery', 'redshift', 'tableau', 'power bi', 'looker', 'excel',
   // Databases
   'postgresql', 'mysql', 'mongodb', 'redis', 'elasticsearch', 'dynamodb', 'oracle', 'cassandra',
+  // QA & test automation — the tools QA job ads and ATS filters key on. Their
+  // absence made every QA posting look like a zero-skill match, and the tailor
+  // never flagged a missing "selenium"/"playwright" as an ATS keyword gap.
+  'selenium', 'playwright', 'cypress', 'appium', 'webdriver', 'puppeteer', 'testng',
+  'junit', 'pytest', 'jest', 'mocha', 'cucumber', 'bdd', 'robot framework', 'postman',
+  'rest assured', 'soapui', 'jmeter', 'gatling', 'locust', 'load testing', 'performance testing',
+  'regression testing', 'smoke testing', 'exploratory testing', 'manual testing',
+  'test automation', 'test strategy', 'test plan', 'test case', 'test framework',
+  'api testing', 'ui testing', 'mobile testing', 'accessibility testing', 'security testing',
+  'sdet', 'qa automation', 'quality engineering', 'defect management', 'bug tracking',
+  'testrail', 'zephyr', 'xray', 'shift-left', 'test coverage', 'sast', 'dast',
   // Practice & process
   'agile', 'scrum', 'kanban', 'jira', 'confluence', 'git', 'code review', 'unit testing',
   'integration testing', 'tdd', 'microservices', 'distributed systems', 'system design',

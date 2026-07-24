@@ -134,6 +134,10 @@ const SYSTEM_PATHS = [
   // that ships those without these leaves the checkout unable to start.
   'lib/gemini-call.mjs',
   'lib/api-key.mjs',
+  // Phase 6 (per-user matching + daily digest) and Phase 8 (India toggle).
+  'match-jobs.mjs',
+  'daily-digest.mjs',
+  'india-toggle.mjs',
   'img-to-pdf.mjs',
   'archive-posting.mjs',
   'application-answers.mjs',
