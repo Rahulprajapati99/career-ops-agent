@@ -73,13 +73,85 @@ Log check: the bot must print
 `🤖 Career-Ops Family Bot online — serving 1 allowlisted user(s).`
 If it exits complaining about `TELEGRAM_ALLOWED_IDS`, step 2 didn't land.
 
-## 5. Daily global scan (cron)
+## 5. Daily scan + digest (cron)
+
+One job does both: it rescans each user's own portals, ranks the results against
+their profile, and pushes them a Telegram digest of what is new, live, and
+actually relevant.
 
 ```bash
 crontab -e
 # add (07:00 VM-local time, adjust to taste):
-0 7 * * * cd $HOME/career-ops-agent && /usr/bin/node run-as-user.mjs _global scan.mjs >> $HOME/career-ops-scan.log 2>&1
+0 7 * * * /bin/bash -lc 'cd $HOME/career-ops-agent && node daily-digest.mjs --scan' >> $HOME/career-ops-digest.log 2>&1
 ```
+
+`/bin/bash -lc` is load-bearing — cron's bare environment has no PATH to node
+and does not load `.env`.
+
+Preview without sending anything:
+
+```bash
+node daily-digest.mjs --dry-run
+```
+
+Useful flags: `--user <id>` (one person), `--top 5` (jobs per digest),
+`--min-score 35` (relevance floor). Users control delivery themselves from
+Telegram with `/digest off` and `/digest on`; `/digest` alone shows their
+current matches on demand.
+
+## 5b. Web dashboard (Phase 7)
+
+The dashboard is upstream's single-user Next app, made multi-user by a gateway
+that runs **one dashboard process per signed-in user**, each pinned to that
+user's own data root. Isolation is enforced by the OS — separate processes,
+separate roots — rather than by every query remembering to filter.
+
+```bash
+cd $HOME/career-ops-agent/web && npm install && npm run build && cd ..
+node web-gateway.mjs --check     # verifies env + that the build exists
+pm2 start web-gateway.mjs --name career-ops-web && pm2 save
+```
+
+Add to `.env`:
+
+```
+TELEGRAM_BOT_USERNAME=YourBotName                    # no @; renders the login button
+CAREER_OPS_PUBLIC_URL=https://your-tunnel-hostname   # required behind Cloudflare Tunnel
+# CAREER_OPS_SESSION_SECRET=<random hex>             # optional; derived from the bot token if unset
+```
+
+Expose it with a free Cloudflare Tunnel (no open inbound ports, free TLS):
+
+```bash
+cloudflared tunnel --url http://localhost:8080
+```
+
+Then set `CAREER_OPS_PUBLIC_URL` to the hostname it prints, restart the gateway,
+and point the Telegram login widget at that domain via **@BotFather →
+/setdomain**. Without that step Telegram refuses to render the login button.
+
+Sign-in flow: `/login` shows the Telegram widget → Telegram signs the payload →
+the gateway verifies the HMAC with the bot token, checks the allowlist, and sets
+a signed session cookie. The allowlist is re-checked on **every** request, so
+removing an id from `TELEGRAM_ALLOWED_IDS` locks that person out immediately
+rather than whenever their cookie happens to expire.
+
+Each user's first page load spawns their dashboard (a few seconds); after that
+it stays warm. Budget roughly 200–300 MB of RAM per active user.
+
+## 5c. India (Phase 8)
+
+Off by default — Canada plus US-remote only. Per user, one command:
+
+```
+/india on      # in Telegram
+/india off
+```
+
+or on the VM: `node run-as-user.mjs <id> india-toggle.mjs --on`. It flips all
+three things that must agree (the geo-policy opt-in, the Adzuna India portal
+entry, and the `location_filter` block); `--off` restores `portals.yml`
+byte-for-byte.
 
 ## 6. Smoke test from Telegram
 

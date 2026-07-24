@@ -138,6 +138,9 @@ const SYSTEM_PATHS = [
   'match-jobs.mjs',
   'daily-digest.mjs',
   'india-toggle.mjs',
+  // Phase 7 — multi-user web front door.
+  'web-gateway.mjs',
+  'lib/telegram-auth.mjs',
   'img-to-pdf.mjs',
   'archive-posting.mjs',
   'application-answers.mjs',
