@@ -61,6 +61,26 @@ const BASE_CHILD_PORT = Number(process.env.CAREER_OPS_CHILD_PORT_BASE || 41000);
 /** userId → { port, proc, ready } */
 const instances = new Map();
 
+/** Ports currently held by a live child, so we never hand out a colliding one. */
+const usedPorts = new Set();
+function allocPort() {
+  let p = BASE_CHILD_PORT;
+  while (usedPorts.has(p)) p += 1;
+  usedPorts.add(p);
+  return p;
+}
+
+/**
+ * Kill a child's whole process group (npm + the next server it spawned).
+ * Best-effort — a group that's already gone just throws, which we ignore.
+ */
+function killChild(entry) {
+  try {
+    if (process.platform !== 'win32' && entry?.proc?.pid) process.kill(-entry.proc.pid, 'SIGTERM');
+    else entry?.proc?.kill('SIGTERM');
+  } catch { /* already gone */ }
+}
+
 // ---------------------------------------------------------------------------
 // Per-user Next instances
 // ---------------------------------------------------------------------------
@@ -77,19 +97,25 @@ async function instanceFor(userId) {
   const root = join(USERS_DIR, userId);
   if (!existsSync(root)) scaffoldUser(userId);
 
-  const port = BASE_CHILD_PORT + instances.size;
+  const port = allocPort();
   const proc = spawn('npm', ['run', 'start', '--', '--port', String(port)], {
     cwd: join(REPO_ROOT, 'web'),
     // CAREER_OPS_ROOT is the whole isolation mechanism: this process can only
     // ever see one user's files, no matter what its request handlers do.
     env: { ...process.env, CAREER_OPS_ROOT: root, PORT: String(port) },
     stdio: ['ignore', 'pipe', 'pipe'],
+    // POSIX: give the child (npm) its own process group so shutdown can kill the
+    // whole npm→next tree. Without this a pm2 restart orphans the old dashboard,
+    // which keeps holding the port and serving the STALE build — the new gateway
+    // then proxies to it and users see old/empty data (exactly the bug seen live).
+    detached: process.platform !== 'win32',
     shell: process.platform === 'win32',
   });
   proc.stdout.on('data', (d) => process.stdout.write(`[web:${userId}] ${d}`));
   proc.stderr.on('data', (d) => process.stderr.write(`[web:${userId}] ${d}`));
   proc.on('exit', (code) => {
     console.log(`[web:${userId}] exited (${code})`);
+    usedPorts.delete(port);
     instances.delete(userId);
   });
 
@@ -274,6 +300,20 @@ if (isMain) {
   }
 
   for (const p of problems) console.warn(`⚠️  ${p}`);
+
+  // Graceful shutdown: pm2 restart sends SIGINT/SIGTERM. Kill our per-user
+  // dashboards first so they release their ports and don't linger serving the
+  // old build — then a fresh gateway spawns them clean on the new build.
+  let shuttingDown = false;
+  const shutdown = () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    for (const entry of instances.values()) killChild(entry);
+    setTimeout(() => process.exit(0), 600);
+  };
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+
   server.listen(PORT, () => {
     console.log(`🌐 Career Ops gateway on http://localhost:${PORT}`);
     console.log(`   Sign-in: ${PUBLIC_URL || `http://localhost:${PORT}`}/login`);
