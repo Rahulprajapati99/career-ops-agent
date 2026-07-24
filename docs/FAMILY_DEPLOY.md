@@ -153,6 +153,32 @@ three things that must agree (the geo-policy opt-in, the Adzuna India portal
 entry, and the `location_filter` block); `--off` restores `portals.yml`
 byte-for-byte.
 
+## 5d. Y Combinator + Wellfound sources
+
+Both ship in `templates/portals.family.yml`, so **new** users get them
+automatically. Existing users (you, and `_global`) do not — `scaffold-user.mjs`
+never overwrites an existing `portals.yml`, and `users/` is gitignored, so the
+new entries can't arrive over `git pull`. Add them once per user on the VM:
+
+```
+node run-as-user.mjs 8772217091 add-job-sources.mjs        # show what's missing
+node run-as-user.mjs 8772217091 add-job-sources.mjs --add  # add them
+node run-as-user.mjs _global add-job-sources.mjs --add
+```
+
+It is idempotent (re-running adds nothing) and edits the YAML as text, so your
+comments and tuning survive. `--dry-run` previews without writing.
+
+- **Y Combinator** reads YC's own public jobs board (the Work at a Startup front
+  door) — zero-auth, no key, ~250 live postings with salary/visa/batch metadata.
+  Tune `roles:` in `portals.yml` (default `[eng, product, operations]`; omit the
+  key for all 11 categories).
+- **Wellfound** blocks automated access outright (HTTP 403 everywhere, job paths
+  disallowed in robots.txt, no public API), so it is scanned **through Google
+  Jobs** using the serpapi provider's `via: Wellfound` filter. It therefore needs
+  a SerpApi key — `/setkey serpapi <key>` (free 100 searches/mo). Without a key
+  the entry skips quietly and the rest of the scan is unaffected.
+
 ## 6. Smoke test from Telegram
 
 1. `/start` — should greet you; if it asks for a resume, your migration in

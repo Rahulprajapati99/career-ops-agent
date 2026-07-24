@@ -135,6 +135,18 @@ job_boards:
     enabled: true
     notes: "Aggregated ATS jobs — zero-auth"
 
+  # Y Combinator — YC's own public jobs board (the Work at a Startup front
+  # door). Zero-auth, one request per role category, ~250 live postings with
+  # salary/visa/batch metadata. workatastartup.com itself needs a login (HTTP
+  # 406 for anonymous clients), so this is the supported way in.
+  - name: Y Combinator
+    careers_url: https://www.ycombinator.com/jobs
+    provider: ycombinator
+    roles: [eng, product, operations]   # CUSTOMIZE — omit for all 11 categories
+    max_jobs: 500
+    enabled: true
+    notes: "YC / Work at a Startup postings — zero-auth"
+
   # SerpApi Google Jobs — ONE API over LinkedIn, Indeed, Greenhouse, etc.
   # Per-user key: /setkey serpapi <key> (free 100 searches/mo). CUSTOMIZE q.
   - name: Google Jobs (US)
@@ -151,6 +163,30 @@ job_boards:
     max_pages: 1
     enabled: true
     notes: "LinkedIn/Indeed/etc. via Google Jobs — needs SERPAPI key"
+
+  # Wellfound (ex-AngelList) blocks automated access outright — every endpoint,
+  # including the ones its robots.txt points crawlers at, answers HTTP 403, and
+  # robots.txt disallows the job paths. There is no public API. Google DOES
+  # index Wellfound postings, so they are scanned through Google Jobs with the
+  # `via:` source filter instead. Same SerpApi key as the entries above; keep
+  # `q` broad because `via` is what narrows the rows.
+  - name: Wellfound
+    provider: serpapi
+    q: "startup software engineer"     # CUSTOMIZE per family member
+    location: "United States"
+    via: Wellfound
+    max_pages: 1
+    enabled: true
+    notes: "Wellfound/AngelList postings via Google Jobs — needs SERPAPI key"
+
+  - name: Wellfound (Canada)
+    provider: serpapi
+    q: "startup software engineer"     # CUSTOMIZE
+    location: "Canada"
+    via: Wellfound
+    max_pages: 1
+    enabled: true
+    notes: "Wellfound/AngelList postings via Google Jobs — needs SERPAPI key"
 
   # Generic schema.org JSON-LD harvester — point at ANY careers page that
   # embeds JobPosting markup (what Google for Jobs reads). One entry per page.

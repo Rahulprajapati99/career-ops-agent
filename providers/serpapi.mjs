@@ -16,6 +16,14 @@
 //   location  — Google location string (e.g. "Canada", "United States")
 //   max_pages — pages to fetch (default 1, hard cap 5) — conserves quota
 //   hl / gl   — language / country (optional)
+//   via       — keep ONLY postings that came from this source, e.g. "Wellfound"
+//               or "LinkedIn". Google reports the origin board per result
+//               ("via Wellfound") and links to it in apply_options, so both are
+//               matched. This is how a board that blocks direct API access (as
+//               Wellfound does) can still be scanned: Google indexes it, we
+//               filter its rows out of the result set. Omit for no filtering.
+//               Note it costs the same quota as an unfiltered search but keeps
+//               fewer rows — pair it with a broad q.
 
 import { decodeEntities } from './_html-entities.mjs';
 
@@ -62,6 +70,36 @@ export function normalizeSerpJob(j) {
   return job;
 }
 
+/**
+ * Does a raw Google Jobs result come from the named board? Matches the `via`
+ * label ("via Wellfound") and, as a fallback, the host of any apply/related
+ * link — a Wellfound row always links back to wellfound.com even when the
+ * label is localized. Comparison is case-insensitive and non-alphanumeric
+ * characters are dropped, so "Work at a Startup" matches "workatastartup".
+ * Exported for tests.
+ *
+ * @param {any} j        Raw jobs_results row.
+ * @param {string} via   Board name from the portal entry.
+ */
+export function matchesVia(j, via) {
+  const want = String(via || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (!want) return true;
+  const label = String(j?.via || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  if (label.includes(want)) return true;
+  const links = [
+    ...(Array.isArray(j?.apply_options) ? j.apply_options.map((o) => o?.link) : []),
+    ...(Array.isArray(j?.related_links) ? j.related_links.map((o) => o?.link) : []),
+  ];
+  for (const link of links) {
+    if (typeof link !== 'string') continue;
+    try {
+      // Compare the HOST only: a query string could otherwise mention any board.
+      if (new URL(link).hostname.toLowerCase().replace(/[^a-z0-9]/g, '').includes(want)) return true;
+    } catch { /* malformed link — ignore */ }
+  }
+  return false;
+}
+
 function pageCap(entry) {
   const v = entry?.max_pages;
   const n = Number.isInteger(v) && v > 0 ? v : DEFAULT_MAX_PAGES;
@@ -102,6 +140,10 @@ export default {
       nextToken = json?.serpapi_pagination?.next_page_token || null;
       if (!nextToken) break; // last page
     }
-    return all.map(normalizeSerpJob).filter(Boolean);
+    // Source filter runs on the RAW rows: `via` and the apply links are dropped
+    // by normalization, so it can't be applied afterwards.
+    const via = typeof entry?.via === 'string' ? entry.via.trim() : '';
+    const rows = via ? all.filter((j) => matchesVia(j, via)) : all;
+    return rows.map(normalizeSerpJob).filter(Boolean);
   },
 };

@@ -741,6 +741,24 @@ search_queries:
 #   provider: hackernews
 #   enabled: true
 #
+# - name: Y Combinator                    # YC's own public jobs board (Work at a Startup)
+#   provider: ycombinator                 # zero-auth; one request per role category
+#   roles: [eng, product]                 # optional — omit for all 11 categories
+#   max_jobs: 500                         # optional cap (default 500)
+#   enabled: true
+#
+# Wellfound (ex-AngelList) has no public API and answers automated clients with
+# HTTP 403, so it cannot be fetched directly. Google indexes its postings
+# though, so scan it through the serpapi provider's `via:` source filter
+# (needs a SerpApi key — see the Google Jobs entry below):
+#
+# - name: Wellfound
+#   provider: serpapi
+#   q: "startup software engineer"        # keep BROAD — `via` filters the rows
+#   location: "United States"
+#   via: Wellfound                        # keep only Wellfound-sourced postings
+#   enabled: true
+#
 # - name: Jobspresso                      # curated remote roles (public WordPress feed)
 #   provider: jobspresso
 #   enabled: true
