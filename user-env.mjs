@@ -33,6 +33,9 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const INTEGRATION_ENV = {
   serpapi_key: 'SERPAPI_KEY',
   hunter_api_key: 'HUNTER_API_KEY',
+  // A personal Gemini key overrides the shared one in .env, so each family
+  // member gets their OWN free-tier daily quota instead of sharing ~20/day.
+  gemini_api_key: 'GEMINI_API_KEY',
 };
 
 /** Repo root (where the system scripts live). */

@@ -289,9 +289,14 @@ LEGITIMACY: <High Confidence | Proceed with Caution | Suspicious>
 // ---------------------------------------------------------------------------
 // Retry helper with exponential backoff + model fallback
 // ---------------------------------------------------------------------------
+// Capable models with SEPARATE free-tier daily quotas (each model has its own
+// 20+/day pool). Ordered by free-tier headroom + quality for the A–G format.
+// Deliberately NO "-lite" models here — they under-fill the structured report
+// and produce the "missing Block A…G" validation failures.
 const FALLBACK_MODELS = [
-  'gemini-3.5-flash',      // previous GA workhorse, separate quota pool
-  'gemini-3.5-flash-lite', // lightest GA model, separate quota pool
+  'gemini-2.5-flash',   // larger free-tier budget, strong on the structured format
+  'gemini-2.0-flash',   // large free tier
+  'gemini-3.5-flash',   // previous workhorse, separate quota pool
 ];
 
 function sleep(ms) {
@@ -305,8 +310,13 @@ function parseRetryDelay(errorMsg) {
 }
 
 function isQuotaExhausted(errorMsg) {
-  // Daily quota exhausted (limit: 0) vs transient per-minute limit
-  return /limit:\s*0/i.test(errorMsg) && /free_tier/i.test(errorMsg);
+  // A per-DAY free-tier quota hit (vs a transient per-minute 429). Google
+  // reports the quota VALUE here (e.g. "limit: 20"), not 0, so match on the
+  // quota *kind* instead — retrying the same model won't help; fall back to a
+  // model with its own separate daily pool.
+  const s = String(errorMsg);
+  return /429|RESOURCE_EXHAUSTED|quota/i.test(s)
+    && /per\s*day|perday|GenerateRequestsPerDay|free_tier_requests/i.test(s);
 }
 
 async function callGeminiWithRetry(genAI, modelId, contents, maxRetries = 3) {

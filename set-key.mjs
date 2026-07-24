@@ -41,6 +41,15 @@ export const SERVICES = {
       return { used, limit: avail != null ? used + avail : (s.limit != null ? Number(s.limit) : null) };
     },
   },
+  gemini: {
+    label: 'Gemini',
+    field: 'gemini_api_key',
+    // models.list is free and does NOT consume generate-content quota.
+    account: (k) => `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(k)}`,
+    // Google exposes no remaining-quota endpoint — a non-empty model list means
+    // the key is valid; usage counts are reported as unknown.
+    usage: (j) => (Array.isArray(j?.models) && j.models.length ? { used: null, limit: null } : null),
+  },
   serpapi: {
     label: 'SerpApi',
     field: 'serpapi_key',
@@ -93,7 +102,11 @@ async function fetchJson(url) {
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
   const args = process.argv.slice(2);
-  const fmt = (u) => (u ? `${u.used}/${u.limit ?? '?'} used this month` : 'usage unavailable');
+  const fmt = (u) => {
+    if (!u) return 'usage unavailable';
+    if (u.used == null) return 'key valid (Google exposes no remaining-quota API)';
+    return `${u.used}/${u.limit ?? '?'} used this month`;
+  };
 
   if (args.includes('--credits')) {
     let any = false;

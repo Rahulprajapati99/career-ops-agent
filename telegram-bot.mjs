@@ -179,8 +179,12 @@ function redactSecrets(text) {
  */
 function friendlyError(error) {
   const errMsg = (error && (error.message || String(error))) || '';
+  const quotaText = `${errMsg}${error?.stderr || ''}${error?.stdout || ''}`;
+  if (/per\s*day|perday|free_tier_requests|All models exhausted|daily quota/i.test(quotaText)) {
+    return '📉 Daily AI quota used up.\n\nGoogle\'s free tier allows only ~20 requests/day per model, and right now the whole family shares one key. It resets at midnight Pacific.\n\nFix it permanently: get your own free key at aistudio.google.com and send /setkey gemini <key> — then you get your own daily quota instead of sharing.';
+  }
   if (/429|quota|rate limit|QUOTA_EXHAUSTED/i.test(errMsg)) {
-    return '⚠️ Rate limit hit — the free Gemini quota is temporarily exhausted. Wait ~60s and retry (daily cap resets tomorrow).';
+    return '⚠️ Rate limited — too many AI requests in a short window. Wait ~60s and retry.';
   }
   if (/GEMINI_API_KEY/i.test(`${errMsg}${error?.stderr || ''}${error?.stdout || ''}`)) {
     return '⚙️ The server is missing its GEMINI_API_KEY — add it to .env on the host and restart the bot. Evaluation, tailoring, and cover letters need it.';
@@ -855,16 +859,17 @@ async function handleSetKey(chatId, argstr) {
   const tokens = String(argstr || '').trim().split(/\s+/).filter(Boolean);
   let service = 'hunter';
   let rawKey = tokens[0] || '';
-  if (['hunter', 'serpapi'].includes((tokens[0] || '').toLowerCase())) {
+  if (['hunter', 'serpapi', 'gemini'].includes((tokens[0] || '').toLowerCase())) {
     service = tokens[0].toLowerCase();
     rawKey = tokens[1] || '';
   }
   const key = rawKey.replace(/[^A-Za-z0-9]/g, ''); // keys are alnum — also blocks shell metachars
   if (key.length < 20) {
     await bot.sendMessage(chatId,
-      'Usage:\n/setkey hunter <key> — verify recruiter emails (hunter.io, 50/mo free)\n' +
+      'Usage:\n/setkey gemini <key> — your OWN AI quota (aistudio.google.com, free)\n' +
+      '/setkey hunter <key> — verify recruiter emails (hunter.io, 50/mo free)\n' +
       '/setkey serpapi <key> — Google Jobs (LinkedIn/Indeed/etc.) via serpapi.com (100/mo free)\n\n' +
-      'Each family member uses their own key. (\`/setkey <key>\` alone assumes Hunter.)');
+      'Each family member uses their own keys. (\`/setkey <key>\` alone assumes Hunter.)');
     return;
   }
   await bot.sendMessage(chatId, `🔑 Validating your ${service} key...`);
@@ -873,9 +878,11 @@ async function handleSetKey(chatId, argstr) {
     if (parseMarker(stdout, 'KEY_SAVED') === 'yes') {
       const used = parseMarker(stdout, 'KEY_USED');
       const limit = parseMarker(stdout, 'KEY_LIMIT');
-      const note = service === 'serpapi'
-        ? 'Your next /scan will also pull Google Jobs (LinkedIn, Indeed, Greenhouse, …).'
-        : '/contact will now verify recruiter emails.';
+      const note = {
+        serpapi: 'Your next /scan will also pull Google Jobs (LinkedIn, Indeed, Greenhouse, …).',
+        gemini: 'Evaluations, tailoring and cover letters now run on YOUR own daily quota instead of the shared one.',
+        hunter: '/contact will now verify recruiter emails.',
+      }[service];
       await bot.sendMessage(chatId, `✅ ${service} key saved — ${used}/${limit} used this month.\n${note}`);
     } else {
       await bot.sendMessage(chatId, `❌ ${service} rejected that key. Double-check it and try /setkey again.`);
