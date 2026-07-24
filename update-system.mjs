@@ -138,6 +138,8 @@ const SYSTEM_PATHS = [
   'match-jobs.mjs',
   'daily-digest.mjs',
   'india-toggle.mjs',
+  // Migration that adds the YC + Wellfound sources to an existing portals.yml.
+  'add-job-sources.mjs',
   // Phase 7 — multi-user web front door.
   'web-gateway.mjs',
   'lib/telegram-auth.mjs',
