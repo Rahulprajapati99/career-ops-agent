@@ -231,6 +231,10 @@ ${cv.slice(0, 14000)}
       phone: cand.phone || '',
       location: cand.location || '',
       linkedin: cand.linkedin || '',
+      // Were dropped here: the profile carries both, but only linkedin was
+      // forwarded, so the cover letter's contact line silently omitted them.
+      github: cand.github || '',
+      portfolio_url: cand.portfolio_url || cand.portfolio || cand.website || '',
     },
     letter: {
       company,

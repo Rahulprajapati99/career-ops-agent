@@ -64,6 +64,11 @@ function buildContactLine(candidate) {
     const display = candidate.github.replace(/^https?:\/\//, "");
     parts.push(`<a href="${escapeHtml(asUrl(candidate.github))}">${escapeHtml(display)}</a>`);
   }
+  const portfolio = candidate.portfolio_url || candidate.portfolio || candidate.website;
+  if (portfolio) {
+    const display = portfolio.replace(/^https?:\/\//, "").replace(/\/$/, "");
+    parts.push(`<a href="${escapeHtml(asUrl(portfolio))}">${escapeHtml(display)}</a>`);
+  }
   return parts.join(" &nbsp;|&nbsp; ");
 }
 

@@ -42,6 +42,38 @@ const EMAIL_SCHEMA = {
   required: ['subject', 'body'],
 };
 
+/**
+ * Prefix a bare domain with https://.
+ *
+ * Bare domains ("rahulprajapati99.vercel.app") stay plain text in most mail
+ * clients, and nobody copy-pastes a portfolio link out of a signature.
+ *
+ * @param {string} value
+ * @returns {string}
+ */
+export const asUrl = (value) => (/^https?:\/\//i.test(value) ? value : `https://${value}`);
+
+/**
+ * Build the deterministic email signature block from a profile's candidate map.
+ *
+ * The portfolio is read under any of the names a profile might use, so a
+ * portfolio that IS configured never silently drops out of the signature.
+ *
+ * @param {object} cand - profile.yml `candidate` map.
+ * @returns {string[]} Signature lines, blanks removed.
+ */
+export function buildSignatureLines(cand = {}) {
+  const portfolio = cand.portfolio_url || cand.portfolio || cand.website || '';
+  return [
+    cand.full_name || cand.name || '',
+    cand.email || '',
+    cand.phone || '',
+    cand.linkedin ? asUrl(cand.linkedin) : '',
+    cand.github ? `GitHub: ${asUrl(cand.github)}` : '',
+    portfolio ? `Portfolio: ${asUrl(portfolio)}` : '',
+  ].filter(Boolean);
+}
+
 const isMain = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isMain) {
   const args = process.argv.slice(2);
@@ -105,14 +137,7 @@ ${cv.slice(0, 12000)}
   // Assemble greeting + body + signature deterministically.
   const first = toName ? String(toName).trim().split(/\s+/)[0] : '';
   const greeting = first ? `Hi ${first},` : 'Hello,';
-  const sigLines = [
-    cand.full_name || cand.name || '',
-    cand.email || '',
-    cand.phone || '',
-    cand.linkedin || '',
-    cand.github ? `GitHub: ${cand.github}` : '',
-    cand.portfolio_url ? `Portfolio: ${cand.portfolio_url}` : '',
-  ].filter(Boolean);
+  const sigLines = buildSignatureLines(cand);
   const fullBody = `${greeting}\n\n${out.body}\n\nBest regards,\n${sigLines.join('\n')}`;
 
   console.log(`EMAIL_SUBJECT: ${out.subject}`);

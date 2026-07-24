@@ -129,6 +129,11 @@ const SYSTEM_PATHS = [
   'patch-latex-content.mjs',
   'lib/latex-escape.mjs',
   'lib/latex-content.mjs',
+  // Shared Gemini call path + API-key handling. Both are imported by
+  // gemini-{eval,tailor,cover,email}.mjs and telegram-bot.mjs, so an update
+  // that ships those without these leaves the checkout unable to start.
+  'lib/gemini-call.mjs',
+  'lib/api-key.mjs',
   'img-to-pdf.mjs',
   'archive-posting.mjs',
   'application-answers.mjs',
