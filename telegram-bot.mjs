@@ -433,7 +433,7 @@ async function handleTailor(chatId, { force = false } = {}) {
     }
 
     await bot.sendMessage(chatId,
-      `✅ *Done!* Next steps:\n• /cover — cover-letter PDF\n• /applykit — full apply kit\n• /status — your tracker`,
+      `✅ *Done!* Next steps:\n• /cover — cover-letter PDF\n• /status — your tracker`,
       { parse_mode: 'Markdown' });
   } catch (error) {
     console.error(`[${chatId}] tailor error:`, error);
@@ -1058,9 +1058,15 @@ async function handleIndia(chatId, argstr) {
       await bot.sendMessage(chatId, 'No portals.yml yet — send /scan once to set your search up.');
       return;
     }
-    await bot.sendMessage(chatId, state.enabled
-      ? '🇮🇳 Indian postings are ON.\n\nYour next /scan will include India alongside Canada and US-remote roles. Send /india off to go back to North America only.'
-      : '🇨🇦 Indian postings are OFF — Canada + US-remote only.\n\nSend /india on to include India.');
+    // The toggle can flip the policy on, but a scan only finds India jobs if the
+    // portals.yml actually has an India source (an Adzuna `country: in` entry).
+    // Say so plainly rather than imply India is being searched when it isn't.
+    const noSource = state.enabled && !state.enabledPortals;
+    await bot.sendMessage(chatId, !state.enabled
+      ? '🇨🇦 Indian postings are OFF — Canada + US-remote only.\n\nSend /india on to include India.'
+      : noSource
+        ? '🇮🇳 India policy is ON, but your search has no India job source yet, so /scan won\'t return India roles. Ask the admin to add an Adzuna India entry to your portals.yml.'
+        : '🇮🇳 Indian postings are ON.\n\nYour next /scan will include India alongside Canada and US-remote roles. Send /india off to go back to North America only.');
   } catch (error) {
     console.error(`[${chatId}] india toggle error:`, error);
     await bot.sendMessage(chatId, friendlyError(error));
