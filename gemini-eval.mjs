@@ -39,6 +39,7 @@ try {
 }
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { generateWithFallback } from './lib/gemini-call.mjs';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -287,90 +288,6 @@ LEGITIMACY: <High Confidence | Proceed with Caution | Suspicious>
 `;
 
 // ---------------------------------------------------------------------------
-// Retry helper with exponential backoff + model fallback
-// ---------------------------------------------------------------------------
-// Capable models with SEPARATE free-tier daily quotas (each model has its own
-// 20+/day pool). Ordered by free-tier headroom + quality for the A–G format.
-// Deliberately NO "-lite" models here — they under-fill the structured report
-// and produce the "missing Block A…G" validation failures.
-const FALLBACK_MODELS = [
-  'gemini-2.5-flash',   // larger free-tier budget, strong on the structured format
-  'gemini-2.0-flash',   // large free tier
-  'gemini-3.5-flash',   // previous workhorse, separate quota pool
-];
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function parseRetryDelay(errorMsg) {
-  // Extract server-suggested retry delay (e.g., "Please retry in 11.899172084s")
-  const match = String(errorMsg).match(/retry in ([0-9.]+)s/i);
-  return match ? Math.ceil(parseFloat(match[1]) * 1000) : null;
-}
-
-function isQuotaExhausted(errorMsg) {
-  // A per-DAY free-tier quota hit (vs a transient per-minute 429). Google
-  // reports the quota VALUE here (e.g. "limit: 20"), not 0, so match on the
-  // quota *kind* instead — retrying the same model won't help; fall back to a
-  // model with its own separate daily pool.
-  const s = String(errorMsg);
-  return /429|RESOURCE_EXHAUSTED|quota/i.test(s)
-    && /per\s*day|perday|GenerateRequestsPerDay|free_tier_requests/i.test(s);
-}
-
-async function callGeminiWithRetry(genAI, modelId, contents, maxRetries = 3) {
-  const model = genAI.getGenerativeModel({
-    model: modelId,
-    generationConfig: {
-      temperature: 0.4,
-      maxOutputTokens: 8192,
-    },
-  });
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const result = await model.generateContent(contents);
-      return result.response.text();
-    } catch (err) {
-      const msg = String(err.message || '');
-      const sanitizedMsg = msg.split(apiKey).join('[REDACTED]');
-
-      // Non-retryable errors — bail immediately
-      if (msg.includes('API_KEY') || msg.includes('PERMISSION_DENIED') || msg.includes('NOT_FOUND')) {
-        throw new Error(`Gemini API error (non-retryable): ${sanitizedMsg}`);
-      }
-
-      // Daily quota fully exhausted — no point retrying this model
-      if (isQuotaExhausted(msg)) {
-        throw new Error(`QUOTA_EXHAUSTED: ${sanitizedMsg}`);
-      }
-
-      // Transient rate limit (429) — retry with backoff
-      if (msg.includes('429') || msg.includes('quota') || msg.includes('rate') || msg.includes('RESOURCE_EXHAUSTED')) {
-        const serverDelay = parseRetryDelay(msg);
-        const backoff = serverDelay || Math.min(2000 * Math.pow(2, attempt - 1), 30000);
-        if (attempt < maxRetries) {
-          console.warn(`⚠️   Rate limited on attempt ${attempt}/${maxRetries}. Retrying in ${(backoff / 1000).toFixed(1)}s...`);
-          await sleep(backoff);
-          continue;
-        }
-      }
-
-      // Other errors on last attempt
-      if (attempt === maxRetries) {
-        throw new Error(`Gemini API error after ${maxRetries} attempts: ${sanitizedMsg}`);
-      }
-
-      // Generic retry for unknown transient errors
-      const backoff = 2000 * Math.pow(2, attempt - 1);
-      console.warn(`⚠️   Attempt ${attempt}/${maxRetries} failed. Retrying in ${(backoff / 1000).toFixed(1)}s...`);
-      await sleep(backoff);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Call Gemini API (with retry + fallback)
 // ---------------------------------------------------------------------------
 console.log(`🤖  Calling Gemini (${modelName})... this may take 30-60 seconds.\n`);
@@ -385,44 +302,36 @@ let evaluationText;
 let usedModel = modelName;
 
 try {
-  evaluationText = await callGeminiWithRetry(genAI, modelName, contents);
-} catch (primaryErr) {
-  const isPrimaryQuotaExhausted = String(primaryErr.message).startsWith('QUOTA_EXHAUSTED');
-
-  if (isPrimaryQuotaExhausted) {
-    console.warn(`⚠️   ${modelName} daily quota exhausted. Trying fallback models...`);
-
-    let fallbackSucceeded = false;
-    for (const fallback of FALLBACK_MODELS) {
-      if (fallback === modelName) continue; // skip if same as primary
-      try {
-        console.log(`🔄  Trying fallback model: ${fallback}...`);
-        evaluationText = await callGeminiWithRetry(genAI, fallback, contents);
-        usedModel = fallback;
-        fallbackSucceeded = true;
-        console.log(`✅  Fallback to ${fallback} succeeded.`);
-        break;
-      } catch (fbErr) {
-        console.warn(`⚠️   Fallback ${fallback} also failed: ${String(fbErr.message).slice(0, 120)}`);
-      }
-    }
-
-    if (!fallbackSucceeded) {
-      console.error(`\n❌  All models exhausted. Your free-tier daily quota is used up.`);
-      console.error(`    Options:`);
-      console.error(`    1. Wait until tomorrow for quota reset`);
-      console.error(`    2. Upgrade to paid tier at https://aistudio.google.com/`);
-      console.error(`    3. Use a different API key\n`);
-      process.exit(1);
-    }
+  // Shared call path: backoff on transient 429s, and on a per-DAY free-tier hit
+  // move straight to a model with its own daily pool. See lib/gemini-call.mjs.
+  ({ text: evaluationText, usedModel } = await generateWithFallback(
+    genAI,
+    {
+      model: modelName,
+      generationConfig: { temperature: 0.4, maxOutputTokens: 8192 },
+    },
+    contents,
+    { apiKey },
+  ));
+} catch (err) {
+  const msg = String(err?.message || err);
+  if (msg.startsWith('QUOTA_EXHAUSTED:')) {
+    console.error(`\n❌  All models exhausted. Your free-tier daily quota is used up.`);
+    console.error(`    Options:`);
+    console.error(`    1. Wait until tomorrow for quota reset`);
+    console.error(`    2. Upgrade to paid tier at https://aistudio.google.com/`);
+    console.error(`    3. Use a different API key\n`);
+  } else if (msg.startsWith('MODELS_BUSY:')) {
+    console.error('\n❌  Every model is busy right now (Google-side demand spike). Quota is NOT the problem.');
+    console.error('    Retry in a minute.\n');
   } else {
     // Non-quota error — just report and exit
-    console.error('❌  Gemini API error:', primaryErr.message);
-    if (primaryErr.message.includes('API_KEY')) {
+    console.error('❌  Gemini API error:', msg);
+    if (/API_KEY|API key not valid/i.test(msg)) {
       console.error('    Check your GEMINI_API_KEY in .env');
     }
-    process.exit(1);
   }
+  process.exit(1);
 }
 
 if (usedModel !== modelName) {

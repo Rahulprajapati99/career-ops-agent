@@ -11,9 +11,10 @@
  * Usage:
  *   node set-key.mjs hunter  <key>     # save + validate a Hunter.io key
  *   node set-key.mjs serpapi <key>     # save + validate a SerpApi key
+ *   node set-key.mjs gemini  <key>     # save + validate a Google AI Studio key
  *   node set-key.mjs --credits         # show usage for every key on file
  *
- * Markers: KEY_SAVED · KEY_USED · KEY_LIMIT
+ * Markers: KEY_SAVED · KEY_USED · KEY_LIMIT · KEY_ERROR
  */
 
 import 'dotenv/config';
@@ -87,13 +88,34 @@ export function loadIntegrationKey(profilePath, field) {
   return '';
 }
 
+/**
+ * GET a JSON account endpoint.
+ *
+ * Returns the parsed body plus the transport detail needed to explain a
+ * failure. Swallowing that detail is what turned "API key not valid" into the
+ * bot's misleading "network issue or bad key".
+ *
+ * @param {string} url
+ * @returns {Promise<{json: any, status: number, error: string|null}>}
+ */
 async function fetchJson(url) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15_000);
   try {
     const res = await fetch(url, { redirect: 'error', signal: controller.signal });
-    return await res.json().catch(() => null);
-  } catch { return null; } finally { clearTimeout(timer); }
+    const json = await res.json().catch(() => null);
+    return { json, status: res.status, error: null };
+  } catch (e) {
+    return { json: null, status: 0, error: e.name === 'AbortError' ? 'request timed out after 15s' : e.message };
+  } finally { clearTimeout(timer); }
+}
+
+/** One-line reason a validation attempt failed, for humans. */
+function rejectionReason({ json, status, error }) {
+  if (error) return `could not reach the provider (${error})`;
+  const apiMsg = json?.error?.message || json?.errors?.[0]?.details || json?.error;
+  if (typeof apiMsg === 'string' && apiMsg.trim()) return `${apiMsg.trim()} (HTTP ${status})`;
+  return `provider returned HTTP ${status} with no usable account data`;
 }
 
 // ---------------------------------------------------------------------------
@@ -114,7 +136,7 @@ if (isMain) {
       const key = loadIntegrationKey(PROFILE_PATH, svc.field);
       if (!key) continue;
       any = true;
-      const usage = svc.usage(await fetchJson(svc.account(key)));
+      const usage = svc.usage((await fetchJson(svc.account(key))).json);
       console.log(`📊 ${svc.label}: ${fmt(usage)}`);
     }
     if (!any) console.log('ℹ️ No API keys on file yet. Use /setkey hunter <key> or /setkey serpapi <key>.');
@@ -125,13 +147,18 @@ if (isMain) {
   const key = args[1];
   const svc = SERVICES[service];
   if (!svc || !key) {
-    console.error('Usage: node set-key.mjs <hunter|serpapi> <key>  |  --credits');
+    console.error('Usage: node set-key.mjs <hunter|serpapi|gemini> <key>  |  --credits');
     process.exit(2);
   }
-  const usage = svc.usage(await fetchJson(svc.account(key)));
+  const result = await fetchJson(svc.account(key));
+  const usage = svc.usage(result.json);
   if (!usage) {
-    console.error(`❌ ${svc.label} rejected that key (could not read the account). Double-check it and retry.`);
+    const reason = rejectionReason(result);
+    console.error(`❌ ${svc.label} rejected that key: ${reason}`);
     console.log('KEY_SAVED: no');
+    // Machine-readable so the bot can tell the user the real cause instead of
+    // guessing between "network issue" and "bad key".
+    console.log(`KEY_ERROR: ${reason.replace(/\s+/g, ' ')}`);
     process.exit(1);
   }
   writeIntegrationKey(PROFILE_PATH, svc.field, key);

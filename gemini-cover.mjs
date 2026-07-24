@@ -31,6 +31,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
+import { createFallbackModel } from './lib/gemini-call.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const USER_ROOT = process.env.CAREER_OPS_USER_ROOT
@@ -133,14 +134,17 @@ if (isMain) {
   // --- ask Gemini for the letter body (schema-constrained JSON) -------------
   const modelName = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
   const genAI = new GoogleGenerativeAI(apiKey);
-  const model = genAI.getGenerativeModel({
+  // Fallback-aware handle: when the primary model's DAILY free-tier quota is
+  // gone, this switches to a model with its own pool instead of failing the
+  // whole cover letter. Same interface as getGenerativeModel().
+  const model = createFallbackModel(genAI, {
     model: modelName,
     generationConfig: {
       responseMimeType: 'application/json',
       responseSchema: LETTER_SCHEMA,
       temperature: 0.4,
     },
-  });
+  }, { apiKey });
 
   const prompt = `You are a career assistant writing a one-page cover letter.
 

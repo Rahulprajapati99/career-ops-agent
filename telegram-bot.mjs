@@ -32,14 +32,19 @@
 
 import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
-import { exec } from 'child_process';
+import { exec, execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 import { REPO_ROOT, userRootFor, buildUserEnv, isValidUserId } from './user-env.mjs';
 import { scaffoldUser } from './scaffold-user.mjs';
+import { cleanKey, isPlausibleApiKey } from './lib/api-key.mjs';
 
 const execAsync = promisify(exec);
+// execFile takes an argv vector and never involves a shell — used where an
+// argument is user-supplied and must survive verbatim (API keys contain "." and
+// "_", which no shell-quoting scheme should be trusted to preserve).
+const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Environment & setup
@@ -180,6 +185,12 @@ function redactSecrets(text) {
 function friendlyError(error) {
   const errMsg = (error && (error.message || String(error))) || '';
   const quotaText = `${errMsg}${error?.stderr || ''}${error?.stdout || ''}`;
+  // Checked BEFORE the quota branch: an overloaded model reports a 503, which
+  // has nothing to do with quota. Telling someone to come back tomorrow over a
+  // 60-second demand spike is the wrong advice.
+  if (/MODELS_BUSY|All models busy|high demand/i.test(quotaText)) {
+    return '🕐 Google\'s AI models are all busy right now (a demand spike on their side, not your quota).\n\nRetry in a minute — the same command will work.';
+  }
   if (/per\s*day|perday|free_tier_requests|All models exhausted|daily quota/i.test(quotaText)) {
     return '📉 Daily AI quota used up.\n\nGoogle\'s free tier allows only ~20 requests/day per model, and right now the whole family shares one key. It resets at midnight Pacific.\n\nFix it permanently: get your own free key at aistudio.google.com and send /setkey gemini <key> — then you get your own daily quota instead of sharing.';
   }
@@ -863,8 +874,8 @@ async function handleSetKey(chatId, argstr) {
     service = tokens[0].toLowerCase();
     rawKey = tokens[1] || '';
   }
-  const key = rawKey.replace(/[^A-Za-z0-9]/g, ''); // keys are alnum — also blocks shell metachars
-  if (key.length < 20) {
+  const key = cleanKey(rawKey);
+  if (!isPlausibleApiKey(key)) {
     await bot.sendMessage(chatId,
       'Usage:\n/setkey gemini <key> — your OWN AI quota (aistudio.google.com, free)\n' +
       '/setkey hunter <key> — verify recruiter emails (hunter.io, 50/mo free)\n' +
@@ -874,7 +885,13 @@ async function handleSetKey(chatId, argstr) {
   }
   await bot.sendMessage(chatId, `🔑 Validating your ${service} key...`);
   try {
-    const { stdout } = await execAsync(`${script('set-key.mjs')} ${service} ${q(key)}`, opts);
+    // execFile (argv vector, no shell): a Gemini key like "AQ.Ex4mpl3…" must
+    // reach set-key.mjs byte-for-byte.
+    const { stdout } = await execFileAsync(
+      process.execPath,
+      [path.join(REPO_ROOT, 'set-key.mjs'), service, key],
+      opts,
+    );
     if (parseMarker(stdout, 'KEY_SAVED') === 'yes') {
       const used = parseMarker(stdout, 'KEY_USED');
       const limit = parseMarker(stdout, 'KEY_LIMIT');
@@ -890,8 +907,15 @@ async function handleSetKey(chatId, argstr) {
       await bot.sendMessage(chatId, `❌ ${service} rejected that key. Double-check it and try /setkey again.`);
     }
   } catch (err) {
+    // set-key.mjs exits 1 on rejection, so a rejected key lands HERE, not in the
+    // else branch above. Report what the provider actually said — "network issue
+    // or bad key" sent the user chasing their connection while the real answer
+    // ("API key not valid") was sitting in stdout.
     console.error(`[${chatId}] setkey error:`, err.message);
-    await bot.sendMessage(chatId, '❌ Could not validate the key (network issue or bad key). Try again in a moment.');
+    const reason = parseMarker(err.stdout || '', 'KEY_ERROR');
+    await bot.sendMessage(chatId, reason
+      ? `❌ ${service} rejected that key.\n\n🔧 ${redactSecrets(reason).slice(0, 300)}\n\nCopy the key again from the provider's page — include every character (dots, dashes, underscores).`
+      : '❌ Could not reach the provider to validate the key. Try again in a moment.');
   }
 }
 

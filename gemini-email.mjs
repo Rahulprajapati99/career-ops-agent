@@ -27,6 +27,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 import { parseModelJson, collapseField } from './gemini-cover.mjs';
+import { createFallbackModel } from './lib/gemini-call.mjs';
 
 const USER_ROOT = process.env.CAREER_OPS_USER_ROOT
   ? resolve(process.env.CAREER_OPS_USER_ROOT)
@@ -65,10 +66,12 @@ if (isMain) {
   const cand = profile.candidate || {};
 
   const modelName = process.env.GEMINI_MODEL || 'gemini-3.6-flash';
-  const model = new GoogleGenerativeAI(apiKey).getGenerativeModel({
+  // Fallback-aware handle — a used-up daily quota on the primary model switches
+  // to one with its own pool rather than failing the draft. See lib/gemini-call.mjs.
+  const model = createFallbackModel(new GoogleGenerativeAI(apiKey), {
     model: modelName,
     generationConfig: { responseMimeType: 'application/json', responseSchema: EMAIL_SCHEMA, temperature: 0.4 },
-  });
+  }, { apiKey });
 
   const prompt = `Write a SHORT cold outreach email from a job applicant to a recruiter or hiring manager.
 

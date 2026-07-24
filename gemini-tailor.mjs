@@ -35,6 +35,7 @@ try {
 }
 
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { generateWithFallback } from './lib/gemini-call.mjs';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -246,76 +247,6 @@ OUTPUT FORMAT:
 `;
 
 // ---------------------------------------------------------------------------
-// Retry helper with exponential backoff + model fallback
-// ---------------------------------------------------------------------------
-const FALLBACK_MODELS = [
-  'gemini-3.5-flash',
-  'gemini-3.5-flash-lite',
-];
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function parseRetryDelay(errorMsg) {
-  const match = String(errorMsg).match(/retry in ([0-9.]+)s/i);
-  return match ? Math.ceil(parseFloat(match[1]) * 1000) : null;
-}
-
-function isQuotaExhausted(errorMsg) {
-  return /limit:\s*0/i.test(errorMsg) && /free_tier/i.test(errorMsg);
-}
-
-async function callGeminiWithRetry(genAI, modelId, contents, maxRetries = 3) {
-  const model = genAI.getGenerativeModel({
-    model: modelId,
-    generationConfig: {
-      temperature: 0.2,       // low for deterministic CV output
-      maxOutputTokens: 16384, // full HTML CV can be large
-    },
-  });
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const result = await model.generateContent(contents);
-      return result.response.text();
-    } catch (err) {
-      const msg = String(err.message || '');
-      const sanitizedMsg = msg.split(apiKey).join('[REDACTED]');
-
-      // Non-retryable
-      if (msg.includes('API_KEY') || msg.includes('PERMISSION_DENIED') || msg.includes('NOT_FOUND')) {
-        throw new Error(`Gemini API error (non-retryable): ${sanitizedMsg}`);
-      }
-
-      // Daily quota exhausted — no point retrying this model
-      if (isQuotaExhausted(msg)) {
-        throw new Error(`QUOTA_EXHAUSTED: ${sanitizedMsg}`);
-      }
-
-      // Transient rate limit — retry with backoff
-      if (msg.includes('429') || msg.includes('quota') || msg.includes('rate') || msg.includes('RESOURCE_EXHAUSTED')) {
-        const serverDelay = parseRetryDelay(msg);
-        const backoff = serverDelay || Math.min(2000 * Math.pow(2, attempt - 1), 30000);
-        if (attempt < maxRetries) {
-          console.warn(`⚠️   Rate limited on attempt ${attempt}/${maxRetries}. Retrying in ${(backoff / 1000).toFixed(1)}s...`);
-          await sleep(backoff);
-          continue;
-        }
-      }
-
-      if (attempt === maxRetries) {
-        throw new Error(`Gemini API error after ${maxRetries} attempts: ${sanitizedMsg}`);
-      }
-
-      const backoff = 2000 * Math.pow(2, attempt - 1);
-      console.warn(`⚠️   Attempt ${attempt}/${maxRetries} failed. Retrying in ${(backoff / 1000).toFixed(1)}s...`);
-      await sleep(backoff);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Call Gemini API (with retry + fallback)
 // ---------------------------------------------------------------------------
 console.log(`🤖  Calling Gemini (${modelName}) for CV tailoring... this may take 30-90 seconds.\n`);
@@ -345,37 +276,32 @@ let tailoredHtml;
 let usedModel = modelName;
 
 try {
-  tailoredHtml = await callGeminiWithRetry(genAI, modelName, contents);
-} catch (primaryErr) {
-  const isPrimaryQuotaExhausted = String(primaryErr.message).startsWith('QUOTA_EXHAUSTED');
-
-  if (isPrimaryQuotaExhausted) {
-    console.warn(`⚠️   ${modelName} daily quota exhausted. Trying fallback models...`);
-
-    let fallbackSucceeded = false;
-    for (const fallback of FALLBACK_MODELS) {
-      if (fallback === modelName) continue;
-      try {
-        console.log(`🔄  Trying fallback model: ${fallback}...`);
-        tailoredHtml = await callGeminiWithRetry(genAI, fallback, contents);
-        usedModel = fallback;
-        fallbackSucceeded = true;
-        console.log(`✅  Fallback to ${fallback} succeeded.`);
-        break;
-      } catch (fbErr) {
-        console.warn(`⚠️   Fallback ${fallback} also failed: ${String(fbErr.message).slice(0, 120)}`);
-      }
-    }
-
-    if (!fallbackSucceeded) {
-      console.error('\n❌  All models exhausted. Your free-tier daily quota is used up.');
-      console.error('    Wait until tomorrow or upgrade to paid tier.\n');
-      process.exit(1);
-    }
+  // Shared call path: backoff on transient 429s, and on a per-DAY free-tier hit
+  // move straight to a model with its own daily pool. See lib/gemini-call.mjs.
+  ({ text: tailoredHtml, usedModel } = await generateWithFallback(
+    genAI,
+    {
+      model: modelName,
+      generationConfig: {
+        temperature: 0.2,       // low for deterministic CV output
+        maxOutputTokens: 16384, // full HTML CV can be large
+      },
+    },
+    contents,
+    { apiKey },
+  ));
+} catch (err) {
+  const msg = String(err?.message || err);
+  if (msg.startsWith('QUOTA_EXHAUSTED:')) {
+    console.error('\n❌  All models exhausted. Your free-tier daily quota is used up.');
+    console.error('    Wait until tomorrow (resets midnight Pacific), add your own key, or upgrade to the paid tier.\n');
+  } else if (msg.startsWith('MODELS_BUSY:')) {
+    console.error('\n❌  Every model is busy right now (Google-side demand spike). Quota is NOT the problem.');
+    console.error('    Retry in a minute.\n');
   } else {
-    console.error('❌  Gemini API error:', primaryErr.message);
-    process.exit(1);
+    console.error('❌  Gemini API error:', msg);
   }
+  process.exit(1);
 }
 
 // ---------------------------------------------------------------------------
