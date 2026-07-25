@@ -1046,6 +1046,7 @@ async function handleHelp(chatId) {
     `/contact <name> [at company] — find a contact's email + draft outreach\n\n` +
     `*Setup:*\n` +
     `/setcv — import/replace your resume\n` +
+    `/setprofile — your name, email, LinkedIn, portfolio (printed on your CV)\n` +
     `/digest — your best-matching jobs now (/digest off to stop the daily push)\n` +
     `/roles — re-read your resume to set which roles I hunt for you\n` +
     `/india on|off — include Indian postings (default: off)\n` +
@@ -1139,6 +1140,66 @@ function digestJobAt(root, index) {
     const state = JSON.parse(fs.readFileSync(path.join(root, 'data', 'digest-state.json'), 'utf-8'));
     return state.offered?.[index] || null;
   } catch { return null; }
+}
+
+// ---------------------------------------------------------------------------
+// Contact details — the fields printed on every CV and cover letter
+// ---------------------------------------------------------------------------
+/**
+ * /setprofile [field] [value] — show or correct this user's own contact details.
+ *
+ * These values are copied verbatim into every tailored CV and cover letter, so a
+ * stale one is visible to employers. cv-import only fills them when it can find
+ * them in the resume, and before this the only fix was an admin hand-editing
+ * YAML on the VM.
+ */
+async function handleSetProfile(chatId, argstr) {
+  const { root } = userCtx(chatId);
+  const profilePath = path.join(root, 'config', 'profile.yml');
+  const { FIELDS, resolveField, normalizeValue, readCandidate, writeCandidateField } =
+    await import('./lib/profile-fields.mjs');
+
+  const tokens = String(argstr || '').trim().split(/\s+/).filter(Boolean);
+  const current = readCandidate(profilePath);
+
+  // No arguments → show what is on file, so a wrong value is visible.
+  if (tokens.length === 0) {
+    const lines = Object.entries(FIELDS)
+      .map(([key, spec]) => `${current[key] ? '✅' : '⬜'} ${spec.label}: ${current[key] || '(not set)'}`);
+    await bot.sendMessage(chatId,
+      `🪪 Your contact details (these appear on your CV and cover letters):\n\n${lines.join('\n')}\n\n`
+      + 'To change one:\n/setprofile linkedin https://www.linkedin.com/in/your-handle\n'
+      + '/setprofile portfolio your-site.com\n/setprofile phone 555-0100\n\n'
+      + `Fields: ${Object.keys(FIELDS).join(', ')}`);
+    return;
+  }
+
+  const field = resolveField(tokens[0]);
+  if (!field) {
+    await bot.sendMessage(chatId, `❌ "${tokens[0]}" is not a field I can set.\n\nTry: ${Object.keys(FIELDS).join(', ')}\nSend /setprofile alone to see your current details.`);
+    return;
+  }
+  if (tokens.length < 2) {
+    await bot.sendMessage(chatId, `Current ${FIELDS[field].label}: ${current[field] || '(not set)'}\n\nTo change it: /setprofile ${tokens[0]} <value>`);
+    return;
+  }
+
+  const verdict = normalizeValue(field, tokens.slice(1).join(' '));
+  if (!verdict.ok) {
+    await bot.sendMessage(chatId, `❌ ${FIELDS[field].label} not updated — ${verdict.reason}.`);
+    return;
+  }
+
+  try {
+    const { changed, previous } = writeCandidateField(profilePath, field, verdict.value);
+    await bot.sendMessage(chatId, changed
+      ? `✅ ${FIELDS[field].label} updated.\n\n${previous ? `was: ${previous}\n` : ''}now: ${verdict.value}\n\n`
+        + 'Your next /tailor and /cover will use it. Documents already generated keep the old value — re-run /tailor to refresh them.'
+      : `${FIELDS[field].label} was already set to that.`);
+  } catch (error) {
+    console.error(`[${chatId}] setprofile error:`, error);
+    await bot.sendMessage(chatId, `❌ Could not update that: ${String(error.message).slice(0, 200)}`);
+  }
 }
 
 async function handleWhoami(chatId) {
@@ -1251,6 +1312,7 @@ bot.on('message', async (msg) => {
     if (text.startsWith('/digest')) return await handleDigest(chatId, text.replace('/digest', ''));
     if (text.startsWith('/india')) return await handleIndia(chatId, text.replace('/india', ''));
     if (text.startsWith('/roles')) return await askScanPreference(chatId);
+    if (text.startsWith('/setprofile')) return await handleSetProfile(chatId, text.replace('/setprofile', ''));
     if (text.startsWith('/')) {
       return await bot.sendMessage(chatId, '❓ Unknown command — /help lists everything.');
     }

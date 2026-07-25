@@ -229,7 +229,12 @@ CONTENT PRESERVATION (MANDATORY):
    (JD-relevant skills first) but do NOT delete any.
 7. Include ALL certifications and education from cv.md. Copy them exactly.
 8. Include ALL projects from cv.md. Do NOT remove any.
-9. Portfolio URL (rahulprajapati99.vercel.app) MUST appear in the contact section.
+9. CONTACT DETAILS come ONLY from this candidate's own profile.yml / cv.md above —
+   name, email, phone, location, LinkedIn, GitHub, portfolio. Copy them verbatim.
+   If a field is absent, LEAVE IT OUT. NEVER invent one, and NEVER reuse a URL,
+   handle or address from an example, a template, or these instructions: this
+   system serves several people, and one person's link in another person's CV is
+   a privacy leak, not a formatting slip.
 
 TAILORING (WHAT YOU CAN DO):
 10. REPHRASE bullet points using JD vocabulary — same facts, different words.

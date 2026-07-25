@@ -134,6 +134,8 @@ const SYSTEM_PATHS = [
   // that ships those without these leaves the checkout unable to start.
   'lib/gemini-call.mjs',
   'lib/api-key.mjs',
+  // Lets a user correct the contact details printed on their own CV (/setprofile).
+  'lib/profile-fields.mjs',
   // Phase 6 (per-user matching + daily digest) and Phase 8 (India toggle).
   'match-jobs.mjs',
   'daily-digest.mjs',
