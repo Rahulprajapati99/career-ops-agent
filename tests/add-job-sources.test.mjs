@@ -33,9 +33,17 @@ try {
     '',
   ].join('\n');
 
-  if (Object.keys(SOURCES).sort().join(',') === 'wellfound,yc')
-    pass('SOURCES exposes the yc + wellfound migrations');
-  else fail(`SOURCES = ${JSON.stringify(Object.keys(SOURCES))}`);
+  // Asserted STRUCTURALLY, not against a hardcoded id list: this test is about
+  // the registry's shape, so adding a migration (communitech, …) must not fail it.
+  const ALL_IDS = Object.keys(SOURCES).sort();
+  const malformed = ALL_IDS.filter((id) => {
+    const s = SOURCES[id];
+    return !s || typeof s.label !== 'string' || typeof s.has !== 'function'
+      || typeof s.block !== 'function' || !Array.isArray(s.block('  '));
+  });
+  if (ALL_IDS.length >= 2 && malformed.length === 0)
+    pass(`SOURCES exposes ${ALL_IDS.length} well-formed migrations (${ALL_IDS.join(', ')})`);
+  else fail(`malformed: ${JSON.stringify(malformed)} of ${JSON.stringify(ALL_IDS)}`);
 
   // ── findInsertPoint ───────────────────────────────────────────────
   const fip = findInsertPoint(BASE.split('\n'));
@@ -57,8 +65,8 @@ try {
   const out = addSources(BASE);
   const cfg = yaml.load(out.text);
 
-  if (out.added.sort().join(',') === 'wellfound,yc' && out.skipped.length === 0)
-    pass('addSources() adds both sources to a config that has neither');
+  if (out.added.sort().join(',') === ALL_IDS.join(',') && out.skipped.length === 0)
+    pass(`addSources() adds every source to a config that has none (${out.added.length})`);
   else fail(`addSources() added=${JSON.stringify(out.added)} skipped=${JSON.stringify(out.skipped)}`);
 
   const yc = (cfg.job_boards || []).find((e) => e.provider === 'ycombinator');
@@ -83,7 +91,7 @@ try {
 
   // ── Idempotency ───────────────────────────────────────────────────
   const again = addSources(out.text);
-  if (again.added.length === 0 && again.skipped.sort().join(',') === 'wellfound,yc')
+  if (again.added.length === 0 && again.skipped.sort().join(',') === ALL_IDS.join(','))
     pass('addSources() is idempotent — a second run adds nothing');
   else fail(`second run added ${JSON.stringify(again.added)}`);
 

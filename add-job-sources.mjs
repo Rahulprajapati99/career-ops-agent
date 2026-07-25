@@ -65,6 +65,24 @@ export const SOURCES = {
       '',
     ],
   },
+  communitech: {
+    label: 'Communitech (Waterloo region)',
+    has: (cfg) => entriesOf(cfg).some((e) => String(e?.provider || '').toLowerCase() === 'communitech'),
+    block: (i) => [
+      `${i}# Communitech — Waterloo-region Canadian tech board. Zero-auth, no key,`,
+      `${i}# and it publishes salary in CAD for about half its postings. It does`,
+      `${i}# not server-render pagination, so coverage comes from queries: — one`,
+      `${i}# request per term, ~20 postings each.`,
+      `${i}- name: Communitech`,
+      `${i}  careers_url: https://www1.communitech.ca/jobs`,
+      `${i}  provider: communitech`,
+      `${i}  queries: ["qa", "quality assurance", "test automation"]   # CUSTOMIZE`,
+      `${i}  max_jobs: 200`,
+      `${i}  enabled: true`,
+      `${i}  notes: "Waterloo-region Canadian tech jobs — zero-auth, often lists salary"`,
+      '',
+    ],
+  },
   wellfound: {
     label: 'Wellfound',
     // Wellfound is reached THROUGH serpapi's via: filter, so that pairing — not

@@ -147,6 +147,19 @@ job_boards:
     enabled: true
     notes: "YC / Work at a Startup postings — zero-auth"
 
+  # Communitech — the Waterloo-region tech job board. Zero-auth, no key, and it
+  # publishes salary in CAD for roughly half its postings. Especially relevant to
+  # a Kitchener/Waterloo/Toronto search: many of these Canadian employers never
+  # reach the big aggregators. The board does not server-render pagination, so
+  # coverage comes from `queries:` — one request per term, ~20 postings each.
+  - name: Communitech
+    careers_url: https://www1.communitech.ca/jobs
+    provider: communitech
+    queries: ["qa", "quality assurance", "test automation"]   # CUSTOMIZE per member
+    max_jobs: 200
+    enabled: true
+    notes: "Waterloo-region Canadian tech jobs — zero-auth, often lists salary"
+
   # SerpApi Google Jobs — ONE API over LinkedIn, Indeed, Greenhouse, etc.
   # Per-user key: /setkey serpapi <key> (free 100 searches/mo). CUSTOMIZE q.
   - name: Google Jobs (US)
