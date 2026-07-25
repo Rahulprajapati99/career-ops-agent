@@ -53,17 +53,28 @@ try {
   if (ranks[1] < ranks[0] && ranks[0] < ranks[2]) pass('rank order: remote < Canada on-site < unknown');
   else fail(`ranks = ${JSON.stringify(ranks)}`);
 
-  // --- hub-city rule (2026-07-24 owner policy) ----------------------------
-  // Canada that is NOT remote must be commutable: Vancouver, Calgary, Toronto.
+  // --- hub-city rule (owner policy, widened 2026-07-25) -------------------
+  // Canada that is NOT remote must be commutable. Owner list: Vancouver,
+  // Calgary, Toronto, Ottawa, Kitchener, Waterloo, Montreal.
   const hubCases = [
     [{ title: 'QA', location: 'Calgary, AB' }, true, 'Calgary hybrid kept'],
     [{ title: 'QA', location: 'Greater Toronto Area' }, true, 'GTA phrasing kept'],
     [{ title: 'QA', location: 'North York, ON' }, true, 'Toronto metro suburb kept'],
-    [{ title: 'QA', location: 'Ottawa, ON' }, false, 'Ottawa on-site dropped (not a hub city)'],
-    [{ title: 'QA', location: 'Halifax, NS' }, false, 'Halifax on-site dropped'],
-    [{ title: 'QA', location: 'Montréal, QC' }, false, 'Montreal on-site dropped'],
+    [{ title: 'QA', location: 'Ottawa, ON' }, true, 'Ottawa on-site kept (added 2026-07-25)'],
+    [{ title: 'QA', location: 'Kitchener, ON' }, true, 'Kitchener on-site kept (added)'],
+    [{ title: 'QA', location: 'Waterloo, Ontario' }, true, 'Waterloo on-site kept (added)'],
+    [{ title: 'QA', location: 'Kitchener-Waterloo, ON' }, true, 'hyphenated KW kept'],
+    [{ title: 'QA', location: 'Montréal, QC' }, true, 'Montreal (accented) on-site kept (added)'],
+    [{ title: 'QA', location: 'Montreal, Quebec' }, true, 'Montreal (unaccented) on-site kept'],
+    [{ title: 'QA', location: 'Halifax, NS' }, false, 'Halifax on-site still dropped'],
+    [{ title: 'QA', location: 'Edmonton, AB' }, false, 'Edmonton on-site still dropped'],
+    [{ title: 'QA', location: 'Winnipeg, MB' }, false, 'Winnipeg on-site still dropped'],
     [{ title: 'QA', location: 'Remote — Halifax, NS' }, true, 'remote anywhere in Canada still kept'],
     [{ title: 'QA', location: 'Remote (Canada)' }, true, 'Canada-wide remote kept'],
+    // "Waterloo" also names cities in Iowa/Illinois/Belgium. The hub test only
+    // runs after detectCountry() resolves the row to Canada, so a US Waterloo
+    // must still be dropped as US on-site — never promoted by the city name.
+    [{ title: 'QA', location: 'Waterloo, IA' }, false, 'Waterloo, Iowa is NOT a Canadian hub'],
   ];
   let hubOk = 0;
   for (const [r, expectKeep, label] of hubCases) {
@@ -78,6 +89,41 @@ try {
   if (classifyRow(inRow).keep === false && classifyRow(inRow, { includeIndia: true }).keep === true)
     pass('India honours the toggle for on-site roles');
   else fail('India toggle regressed');
+
+  // --- India hub cities (owner list 2026-07-25) ---------------------------
+  // With the toggle ON, a non-remote Indian role must be in Ahmedabad,
+  // Gandhinagar or Bengaluru; every other Indian city is a drop. Detection
+  // stays broad so those rows drop as "outside hub cities", not as "outside
+  // North America" — the reason a user reads has to be the true one.
+  const inHubCases = [
+    ['Ahmedabad, Gujarat', true, 'Ahmedabad kept'],
+    ['Gandhinagar, Gujarat', true, 'Gandhinagar kept'],
+    ['Bengaluru, Karnataka', true, 'Bengaluru kept'],
+    ['Bangalore, India', true, 'Bangalore (alternate spelling) kept'],
+    ['Mumbai, Maharashtra', false, 'Mumbai dropped'],
+    ['Pune, India', false, 'Pune dropped'],
+    ['Hyderabad, Telangana', false, 'Hyderabad dropped'],
+    ['Noida, UP', false, 'Noida dropped'],
+    ['India', false, 'country-only "India" dropped (no hub city named)'],
+    ['Remote, India', true, 'India remote kept regardless of city'],
+  ];
+  let inOk = 0;
+  for (const [location, expectKeep, label] of inHubCases) {
+    const got = classifyRow({ title: 'QA', location }, { includeIndia: true });
+    if (got.keep === expectKeep) inOk += 1;
+    else fail(`${label} — got keep=${got.keep} (${got.reason})`);
+  }
+  if (inOk === inHubCases.length) pass(`India non-remote limited to hub cities (${inOk}/${inHubCases.length})`);
+
+  // A dropped Mumbai row must say WHY correctly.
+  const mumbai = classifyRow({ title: 'QA', location: 'Mumbai, Maharashtra' }, { includeIndia: true });
+  if (/hub cities/i.test(mumbai.reason)) pass('non-hub Indian rows drop with the India reason, not "outside North America"');
+  else fail(`Mumbai drop reason = "${mumbai.reason}"`);
+
+  // Toggle OFF still overrides everything, hub city or not.
+  if (classifyRow({ title: 'QA', location: 'Ahmedabad, Gujarat' }).keep === false)
+    pass('toggle OFF drops even a hub-city Indian role');
+  else fail('India hub city bypassed the toggle');
 
   // --- posting age --------------------------------------------------------
   const now = Date.parse('2026-07-24T12:00:00Z');

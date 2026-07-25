@@ -56,16 +56,29 @@ const US_RE = /\b(united states|u\.?s\.?a?\.?|u\.s\.)\b/i;
 const REMOTE_RE = /\bremote\b|\bwfh\b|work[ -]?from[ -]?home|\banywhere\b|\bworldwide\b|\bglobal\b|\bdistributed\b|\btelecommute\b|\bvirtual\b|home[ -]?based|\b(?:us|usa|u\.s\.?)\s+only\b|\bnorth america\b|\bamericas\b/i;
 
 // The only Canadian cities the owner will commute to. A Canadian role that is
-// NOT remote has to be in one of these three; anywhere else in Canada is a drop
-// even though the country matches. Metro spellings are included because boards
-// label the same office a dozen ways ("Toronto, ON", "Greater Toronto Area",
+// NOT remote has to be in one of these; anywhere else in Canada is a drop even
+// though the country matches. Metro spellings are included because boards label
+// the same office a dozen ways ("Toronto, ON", "Greater Toronto Area",
 // "North York"). Deliberately conservative: a suburb only appears here when it
 // is unambiguously that metro.
-const HYBRID_CITY_RE = /\b(vancouver|calgary|toronto|greater toronto|gta|north york|etobicoke|scarborough|downtown toronto|greater vancouver|downtown vancouver)\b/i;
+// Owner list (2026-07-25): Vancouver, Calgary, Toronto + Ottawa, Kitchener,
+// Waterloo, Montreal. "Waterloo" is safe here even though it collides with
+// Waterloo, Iowa/Belgium — this test only runs AFTER detectCountry() has already
+// resolved the row to Canada, so a US Waterloo never reaches it.
+const HYBRID_CITY_RE = /\b(vancouver|calgary|toronto|greater toronto|gta|north york|etobicoke|scarborough|downtown toronto|greater vancouver|downtown vancouver|ottawa|kitchener|waterloo|kitchener[ -]waterloo|montr[eé]al|greater montr[eé]al)\b/i;
 
-// India (Phase 8 toggle). Major tech hubs + the country name; deliberately
-// checked BEFORE the two-letter code rule, since "IN" also means Indiana.
-const IN_RE = /\b(india|bengaluru|bangalore|hyderabad|mumbai|pune|chennai|gurgaon|gurugram|noida|kolkata|ahmedabad|delhi|kochi|coimbatore|indore|jaipur|thiruvananthapuram|trivandrum)\b/i;
+// India (Phase 8 toggle). Broad on purpose — this is DETECTION ("is this row in
+// India?"), so a Mumbai posting must resolve to IN and then be dropped by the
+// hub-city rule below, rather than falling through to "outside North America"
+// and being dropped for the wrong reason. Checked BEFORE the two-letter code
+// rule, since "IN" also means Indiana.
+const IN_RE = /\b(india|bengaluru|bangalore|hyderabad|mumbai|pune|chennai|gurgaon|gurugram|noida|kolkata|ahmedabad|gandhinagar|delhi|kochi|coimbatore|indore|jaipur|thiruvananthapuram|trivandrum)\b/i;
+
+// The only Indian cities the owner would take a non-remote role in
+// (owner list 2026-07-25). Mirrors HYBRID_CITY_RE: India has to be switched on
+// AND the role has to be remote or in one of these. Both spellings of Bengaluru
+// are listed because boards use them interchangeably.
+const IN_HUB_RE = /\b(ahmedabad|gandhinagar|bengaluru|bangalore)\b/i;
 
 /** Classify a location string as 'CA' | 'US' | 'IN' | null (unknown/other). Exported. */
 export function detectCountry(location) {
@@ -105,7 +118,12 @@ export function classifyRow({ title, location }, { includeIndia = false } = {}) 
   // slip in through the remote fast-path.
   if (country === 'IN') {
     if (!includeIndia) return { keep: false, reason: 'India (toggle off)', rank: 9 };
-    return { keep: true, reason: remote ? 'India (remote)' : 'India (on-site/hybrid)', rank: remote ? 0 : 3 };
+    // Remote is location-independent, so it needs no city. Otherwise the same
+    // rule as Canada: only the owner's hub cities.
+    if (remote) return { keep: true, reason: 'India (remote)', rank: 0 };
+    return IN_HUB_RE.test(String(location || ''))
+      ? { keep: true, reason: 'India hybrid/on-site (hub city)', rank: 3 }
+      : { keep: false, reason: 'India on-site outside hub cities', rank: 9 };
   }
   // Remote (Canada-remote, US-remote, or region/worldwide-remote) is top priority.
   if (remote) return { keep: true, reason: 'Remote', rank: 0 };
