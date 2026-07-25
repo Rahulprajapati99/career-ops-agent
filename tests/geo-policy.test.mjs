@@ -76,6 +76,20 @@ try {
     // runs after detectCountry() resolves the row to Canada, so a US Waterloo
     // must still be dropped as US on-site — never promoted by the city name.
     [{ title: 'QA', location: 'Waterloo, IA' }, false, 'Waterloo, Iowa is NOT a Canadian hub'],
+    // Toronto/Vancouver/Montreal metro suburbs count as their hub (added 2026-07-25).
+    [{ title: 'QA', location: 'Mississauga, ON' }, true, 'Mississauga counts as Toronto metro'],
+    [{ title: 'QA', location: 'Brampton, ON' }, true, 'Brampton counts as Toronto metro'],
+    [{ title: 'QA', location: 'Markham, ON' }, true, 'Markham counts as Toronto metro'],
+    [{ title: 'QA', location: 'Burnaby, BC' }, true, 'Burnaby counts as Vancouver metro'],
+    [{ title: 'QA', location: 'Laval, QC' }, true, 'Laval counts as Montreal metro'],
+    // Country-only locations: Google Jobs labels most postings just "Canada".
+    // Treating that as "not a hub" silently dropped 7 relevant roles in one real
+    // scan, so a missing city is missing DATA and the row is kept.
+    [{ title: 'QA', location: 'Canada' }, true, 'bare "Canada" kept (city unstated, not a non-hub)'],
+    [{ title: 'QA', location: 'Canada, ON' }, true, 'province-only Canada kept'],
+    // …but a NAMED non-hub city is still a real drop.
+    [{ title: 'QA', location: 'Hamilton, ON' }, false, 'Hamilton named → still dropped'],
+    [{ title: 'QA', location: 'Quebec City, QC' }, false, 'Quebec City named → still dropped'],
   ];
   let hubOk = 0;
   for (const [r, expectKeep, label] of hubCases) {

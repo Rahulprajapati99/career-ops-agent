@@ -65,7 +65,15 @@ const REMOTE_RE = /\bremote\b|\bwfh\b|work[ -]?from[ -]?home|\banywhere\b|\bworl
 // Waterloo, Montreal. "Waterloo" is safe here even though it collides with
 // Waterloo, Iowa/Belgium — this test only runs AFTER detectCountry() has already
 // resolved the row to Canada, so a US Waterloo never reaches it.
-const HYBRID_CITY_RE = /\b(vancouver|calgary|toronto|greater toronto|gta|north york|etobicoke|scarborough|downtown toronto|greater vancouver|downtown vancouver|ottawa|kitchener|waterloo|kitchener[ -]waterloo|montr[eé]al|greater montr[eé]al)\b/i;
+const HYBRID_CITY_RE = /\b(vancouver|calgary|toronto|greater toronto|gta|north york|etobicoke|scarborough|downtown toronto|greater vancouver|downtown vancouver|ottawa|kitchener|waterloo|kitchener[ -]waterloo|montr[eé]al|greater montr[eé]al|mississauga|brampton|markham|vaughan|richmond hill|oakville|burlington|burnaby|surrey|laval|longueuil)\b/i;
+
+// Canadian cities the owner would NOT commute to. Used only to tell a real
+// non-hub city apart from a location that names NO city at all — Google Jobs
+// reports most postings as a bare "Canada", and treating that as "not a hub"
+// silently discarded highly relevant roles (measured: 7 in one scan). A missing
+// city is missing DATA, not evidence of a bad location — the same convention
+// the blank-location and bare-"India" rules already follow.
+const CA_NON_HUB_CITY_RE = /\b(halifax|edmonton|winnipeg|saskatoon|regina|victoria|qu[eé]bec city|moncton|fredericton|saint john|st\.? john'?s|charlottetown|whitehorse|yellowknife|iqaluit|kelowna|abbotsford|nanaimo|red deer|lethbridge|prince george|thunder bay|sudbury|timmins|north bay|hamilton|london|windsor|oshawa|barrie|guelph|kingston|brantford|peterborough|sherbrooke|gatineau|trois[ -]rivi[eè]res)\b/i;
 
 // India (Phase 8 toggle). Broad on purpose — this is DETECTION ("is this row in
 // India?"), so a Mumbai posting must resolve to IN and then be dropped by the
@@ -138,10 +146,15 @@ export function classifyRow({ title, location }, { includeIndia = false } = {}) 
   // Remote (Canada-remote, US-remote, or region/worldwide-remote) is top priority.
   if (remote) return { keep: true, reason: 'Remote', rank: 0 };
   if (country === 'CA') {
-    // Canada, but someone has to physically go in: only the three hub cities.
-    return HYBRID_CITY_RE.test(String(location || ''))
-      ? { keep: true, reason: 'Canada hybrid/on-site (hub city)', rank: 1 }
-      : { keep: false, reason: 'Canada on-site outside hub cities', rank: 9 };
+    // Canada, but someone has to physically go in: only the owner's hub cities.
+    const loc = String(location || '');
+    if (HYBRID_CITY_RE.test(loc)) return { keep: true, reason: 'Canada hybrid/on-site (hub city)', rank: 1 };
+    // A named non-hub city is a genuine drop. A location that names no city at
+    // all (bare "Canada", "Canada, ON") is kept and ranked with the other
+    // unknown-location rows — Google Jobs labels most of its postings that way,
+    // and dropping them threw away roles that were often in a hub city anyway.
+    if (CA_NON_HUB_CITY_RE.test(loc)) return { keep: false, reason: 'Canada on-site outside hub cities', rank: 9 };
+    return { keep: true, reason: 'Canada (city unstated)', rank: 2 };
   }
   if (country === 'US') return { keep: false, reason: 'US on-site (excluded)', rank: 9 };
   if (!String(location || '').trim()) return { keep: true, reason: 'Location unknown', rank: 2 };

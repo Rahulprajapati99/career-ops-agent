@@ -87,6 +87,17 @@ presets:
       - ai implementation
       - ai consultant
       - ai business
+      # Carried over from the owner's hand-tuned filter (2026-07-25). Applying a
+      # preset REPLACES title_filter.positive, so terms that only lived in a
+      # user's file would be silently lost on the first preset switch — these
+      # belong in the shared preset so both machines keep them.
+      - ai engineer
+      - ai agent
+      - agent development
+      - agentic
+      - machine learning
+      - prompt engineer
+      - llm
     search_any: "qa quality assurance testing automation sdet llm evaluation"
     google_query: '"AI QA engineer" OR "QA automation engineer" OR "SDET" OR "quality assurance" OR "LLM evaluation" OR "AI consultant" OR "test automation"'
     yc_roles: [eng, operations, product]
