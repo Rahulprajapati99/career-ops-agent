@@ -178,3 +178,7 @@ global_negative:
   - volunteer
   - intern
   - internship
+  # "junior" alone misses the abbreviation, which let "Jr. QA Engineer" through
+  # (seen live 2026-07-25). The trailing dot keeps it from matching inside a
+  # normal word, since these are substring tests.
+  - "jr."
