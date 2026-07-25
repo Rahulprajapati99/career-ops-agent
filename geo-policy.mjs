@@ -80,6 +80,12 @@ const IN_RE = /\b(india|bengaluru|bangalore|hyderabad|mumbai|pune|chennai|gurgao
 // are listed because boards use them interchangeably.
 const IN_HUB_RE = /\b(ahmedabad|gandhinagar|bengaluru|bangalore)\b/i;
 
+// Indian cities that are NOT hubs. Used to tell "Mumbai, India" (a real
+// non-hub city → drop) apart from a bare "India" with no city named, which is
+// how Adzuna India labels most of its rows and which the owner wants KEPT
+// (2026-07-25) rather than discarded for lacking a city.
+const IN_NON_HUB_CITY_RE = /\b(hyderabad|mumbai|pune|chennai|gurgaon|gurugram|noida|kolkata|delhi|kochi|coimbatore|indore|jaipur|thiruvananthapuram|trivandrum)\b/i;
+
 /** Classify a location string as 'CA' | 'US' | 'IN' | null (unknown/other). Exported. */
 export function detectCountry(location) {
   const loc = String(location || '');
@@ -121,9 +127,13 @@ export function classifyRow({ title, location }, { includeIndia = false } = {}) 
     // Remote is location-independent, so it needs no city. Otherwise the same
     // rule as Canada: only the owner's hub cities.
     if (remote) return { keep: true, reason: 'India (remote)', rank: 0 };
-    return IN_HUB_RE.test(String(location || ''))
-      ? { keep: true, reason: 'India hybrid/on-site (hub city)', rank: 3 }
-      : { keep: false, reason: 'India on-site outside hub cities', rank: 9 };
+    const loc = String(location || '');
+    if (IN_HUB_RE.test(loc)) return { keep: true, reason: 'India hybrid/on-site (hub city)', rank: 3 };
+    // A row that names an actual non-hub city is a drop; one that names NO city
+    // (bare "India") is kept — country-only is how Adzuna India labels most
+    // postings, and dropping those would discard nearly every India result.
+    if (IN_NON_HUB_CITY_RE.test(loc)) return { keep: false, reason: 'India on-site outside hub cities', rank: 9 };
+    return { keep: true, reason: 'India (city unstated)', rank: 3 };
   }
   // Remote (Canada-remote, US-remote, or region/worldwide-remote) is top priority.
   if (remote) return { keep: true, reason: 'Remote', rank: 0 };
@@ -154,6 +164,88 @@ export function maxPostingAgeDays(portalsPath) {
     const n = Number(raw);
     return Number.isInteger(n) && n > 0 ? n : DEFAULT_MAX_POSTING_AGE_DAYS;
   } catch { return DEFAULT_MAX_POSTING_AGE_DAYS; }
+}
+
+/**
+ * Read this user's `priority_titles` and `min_salary` from portals.yml.
+ * Both are optional: no priority list means every row is one tier, and no
+ * salary floor means no salary filtering.
+ *
+ * @param {string} [portalsPath]
+ * @returns {{priorityTitles: string[], minSalary: number|null}}
+ */
+export function readRankingPrefs(portalsPath) {
+  const p = portalsPath || process.env.CAREER_OPS_PORTALS || join(USER_ROOT, 'portals.yml');
+  try {
+    if (!existsSync(p)) return { priorityTitles: [], minSalary: null };
+    const cfg = yaml.load(readFileSync(p, 'utf-8')) || {};
+    const list = Array.isArray(cfg.priority_titles) ? cfg.priority_titles.filter((t) => typeof t === 'string') : [];
+    const sal = Number(cfg.min_salary);
+    return { priorityTitles: list, minSalary: Number.isFinite(sal) && sal > 0 ? sal : null };
+  } catch { return { priorityTitles: [], minSalary: null }; }
+}
+
+/** Significant words of a title — drops filler that carries no matching signal. */
+const TITLE_FILLER = new Set(['a', 'an', 'the', 'and', 'or', 'of', 'in', 'at', 'for', 'to', 'with', 'i', 'ii', 'iii']);
+function titleWords(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9+#/]+/g, ' ')
+    .split(' ')
+    .filter((w) => w && !TITLE_FILLER.has(w));
+}
+
+/**
+ * Is this posting title one of the user's priority roles?
+ *
+ * A priority entry matches when EVERY significant word of it appears somewhere
+ * in the posting title, in any order. Word-set containment rather than substring
+ * because real postings reorder and pad titles: "Senior QA Engineer" has to
+ * match "Senior QA Engineer, Platform" and "QA Engineer (Senior)", while still
+ * NOT matching a bare "QA Engineer" — the owner listed the senior form on
+ * purpose. Exported for tests.
+ *
+ * @param {string} title            Posting title.
+ * @param {string[]} priorityTitles The user's `priority_titles`.
+ * @returns {boolean}
+ */
+export function isPriorityTitle(title, priorityTitles = []) {
+  const words = new Set(titleWords(title));
+  if (words.size === 0) return false;
+  return priorityTitles.some((p) => {
+    const want = titleWords(p);
+    return want.length > 0 && want.every((w) => words.has(w));
+  });
+}
+
+/**
+ * Lowest annual salary mentioned in a compensation string, normalized to whole
+ * currency units, or null when the row states no usable figure.
+ *
+ * Handles "$85,000 - $110,000", "CAD 90000", "$45/hour" (annualized at 2080h),
+ * and "85k-110k". Returns null — never 0 — for "Competitive" or an empty cell,
+ * so a missing salary can be KEPT rather than filtered out as too low.
+ * Exported for tests.
+ *
+ * @param {unknown} raw
+ * @returns {number|null}
+ */
+export function parseSalaryFloor(raw) {
+  const s = String(raw ?? '').toLowerCase();
+  if (!s.trim()) return null;
+  const hourly = /\b(?:per\s*hour|hourly|\/\s*h(?:r|our)?|an hour)\b/.test(s);
+  const values = [];
+  const re = /(\d[\d,.]*)\s*(k\b)?/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    let n = Number(m[1].replace(/,/g, ''));
+    if (!Number.isFinite(n)) continue;
+    if (m[2]) n *= 1000;                       // "85k"
+    if (hourly && n > 0 && n < 500) n *= 2080; // hourly → annual
+    // Ignore stray small numbers (years of experience, "401k" style noise).
+    if (n >= 10_000) values.push(n);
+  }
+  return values.length ? Math.min(...values) : null;
 }
 
 /**
@@ -198,9 +290,13 @@ export function parsePipelineRow(line) {
   const posted = parts
     .map((p) => p.match(/^posted:\s*(\d{4}-\d{2}-\d{2})$/i)?.[1])
     .find(Boolean) || null;
+  // Compensation is the optional 5th positional cell (scan.mjs writes it when a
+  // board reports pay). Identified by content, not index: the labeled `posted:`
+  // segment can occupy that slot when no salary was reported.
+  const compensation = parts.slice(4).find((p) => p && !/^posted:/i.test(p)) || '';
   return {
     url: parts[0] || '', company: parts[1] || '', title: parts[2] || '',
-    location: parts[3] || '', posted,
+    location: parts[3] || '', posted, compensation,
   };
 }
 
@@ -233,8 +329,10 @@ if (isMain) {
   let dropped = 0;
   let deduped = 0;
   let stale = 0;
+  let underpaid = 0;
   const includeIndia = indiaEnabled();
   const maxAge = maxPostingAgeDays();
+  const { priorityTitles, minSalary } = readRankingPrefs();
   for (const { line, row } of rows) {
     // Freshness first: an aged-out posting is not worth classifying. Rows with
     // no date always survive — same "don't penalize missing data" convention.
@@ -247,22 +345,48 @@ if (isMain) {
     const c = classifyRow(row, { includeIndia });
     reasons[c.reason] = (reasons[c.reason] || 0) + 1;
     if (!c.keep) { dropped += 1; continue; }
+    // Salary floor: only drop when the posting STATES a figure below it. A row
+    // with no salary is kept (most boards report none, and silence is not a
+    // low offer) — the owner's explicit rule.
+    if (minSalary !== null) {
+      const floor = parseSalaryFloor(row.compensation);
+      if (floor !== null && floor < minSalary) {
+        underpaid += 1;
+        const key = `Below ${minSalary.toLocaleString()} salary floor`;
+        reasons[key] = (reasons[key] || 0) + 1;
+        continue;
+      }
+    }
     // Dedup identical postings that arrive under different URLs (e.g. Adzuna's
     // per-request se= token, or the same job cross-listed on two boards).
     const fp = `${row.company}|${row.title}|${row.location}`.toLowerCase().replace(/\s+/g, ' ').trim();
     if (seen.has(fp)) { deduped += 1; continue; }
     seen.add(fp);
-    kept.push({ line, rank: c.rank, posted: row.posted });
+    kept.push({
+      line,
+      rank: c.rank,
+      posted: row.posted,
+      // Tier 0 = one of this user's priority roles, 1 = everything else.
+      tier: priorityTitles.length && isPriorityTitle(row.title, priorityTitles) ? 0 : 1,
+    });
   }
-  // Newest posted first — what the owner actually reads down. Undated rows sort
-  // after every dated one (an unknown date is not evidence of freshness), and
-  // the geography rank breaks ties inside a single day.
+  // Ordering, in precedence order:
+  //   1. priority tier — the user's target roles form a block at the top, so the
+  //      jobs they actually want are never buried under fresher near-misses.
+  //      With no priority_titles configured every row is tier 1 and this term
+  //      vanishes, leaving the previous pure newest-first behaviour untouched.
+  //   2. newest posted first — the reading order, preserved WITHIN each tier.
+  //   3. geography rank, breaking ties inside a single day.
+  // Undated rows sort after dated ones (an unknown date is not evidence of
+  // freshness).
   kept.sort((a, b) => {
+    if (a.tier !== b.tier) return a.tier - b.tier;
     if (a.posted && b.posted && a.posted !== b.posted) return a.posted < b.posted ? 1 : -1;
     if (a.posted && !b.posted) return -1;
     if (!a.posted && b.posted) return 1;
     return a.rank - b.rank;
   });
+  const priorityCount = kept.filter((k) => k.tier === 0).length;
 
   // Trim trailing blank header lines, then re-emit header + sorted kept rows.
   while (header.length && header[header.length - 1].trim() === '') header.pop();
@@ -270,9 +394,9 @@ if (isMain) {
   writeFileSync(pipelinePath, out);
 
   if (asJson) {
-    console.log(JSON.stringify({ kept: kept.length, dropped, deduped, stale, reasons }));
+    console.log(JSON.stringify({ kept: kept.length, dropped, deduped, stale, underpaid, priority: priorityCount, reasons }));
   } else {
-    console.log(`🌎 Geo-policy: kept ${kept.length} (newest first), dropped ${dropped}, stale ${stale}, deduped ${deduped}`);
+    console.log(`🌎 Geo-policy: kept ${kept.length} (${priorityCount} priority-role first, then newest), dropped ${dropped}, stale ${stale}, underpaid ${underpaid}, deduped ${deduped}`);
     for (const [r, n] of Object.entries(reasons).sort((a, b) => b[1] - a[1])) {
       console.log(`   ${n.toString().padStart(4)} · ${r}`);
     }

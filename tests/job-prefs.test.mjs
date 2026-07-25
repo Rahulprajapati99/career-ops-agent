@@ -125,10 +125,15 @@ try {
   if (serp.q === presets['qa-ai'].google_query) pass('applyPreset rewrites the SerpApi query');
   else fail(`serpapi q = ${JSON.stringify(serp.q)}`);
 
+  // Assert against the preset's OWN list rather than a hardcoded literal: the
+  // role categories track the preset's target titles (adding "AI Product
+  // Analyst" legitimately added `product`), so a duplicated literal here would
+  // fail on every such edit while testing nothing extra.
   const yc = parsed.job_boards.find((b) => b.provider === 'ycombinator');
-  if (Array.isArray(yc.roles) && yc.roles.join(',') === 'eng,operations')
-    pass('applyPreset narrows the Y Combinator role categories');
-  else fail(`yc roles = ${JSON.stringify(yc.roles)}`);
+  const wantRoles = presets['qa-ai'].yc_roles.join(',');
+  if (Array.isArray(yc.roles) && yc.roles.join(',') === wantRoles)
+    pass(`applyPreset narrows the Y Combinator role categories (${wantRoles})`);
+  else fail(`yc roles = ${JSON.stringify(yc.roles)}, expected ${wantRoles}`);
 
   // --- comments survive ---------------------------------------------------
   if (applied.includes('# portals.yml — CUSTOMIZE me')

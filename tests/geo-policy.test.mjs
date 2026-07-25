@@ -7,7 +7,8 @@ console.log('\nGeo policy — geo-policy.mjs');
 
 try {
   const mod = await import(pathToFileURL(join(ROOT, 'geo-policy.mjs')).href);
-  const { detectCountry, classifyRow, parsePipelineRow, postedAgeDays, DEFAULT_MAX_POSTING_AGE_DAYS } = mod;
+  const { detectCountry, classifyRow, parsePipelineRow, postedAgeDays, DEFAULT_MAX_POSTING_AGE_DAYS,
+    isPriorityTitle, parseSalaryFloor } = mod;
 
   // --- detectCountry ------------------------------------------------------
   const ca = ['Toronto, ON', 'Vancouver, British Columbia', 'Montréal, QC', 'Canada', 'Ottawa'];
@@ -104,7 +105,8 @@ try {
     ['Pune, India', false, 'Pune dropped'],
     ['Hyderabad, Telangana', false, 'Hyderabad dropped'],
     ['Noida, UP', false, 'Noida dropped'],
-    ['India', false, 'country-only "India" dropped (no hub city named)'],
+    ['India', true, 'country-only "India" KEPT (owner rule 2026-07-25)'],
+    ['India, Asia', true, 'country-only with region kept'],
     ['Remote, India', true, 'India remote kept regardless of city'],
   ];
   let inOk = 0;
@@ -124,6 +126,73 @@ try {
   if (classifyRow({ title: 'QA', location: 'Ahmedabad, Gujarat' }).keep === false)
     pass('toggle OFF drops even a hub-city Indian role');
   else fail('India hub city bypassed the toggle');
+
+  // --- priority titles (owner lists 2026-07-25) ---------------------------
+  // A posting is a priority role when every significant word of a listed title
+  // appears in it, in any order.
+  const QA_PRIORITY = ['AI QA Engineer', 'Senior QA Engineer', 'Senior SDET', 'QA Lead',
+    'Software Development Engineer in Test', 'AI Consultant', 'Quality Engineering Manager'];
+  const priCases = [
+    ['Senior AI QA Engineer', true, 'extra seniority word still matches'],
+    ['QA Engineer (Senior), Platform', true, 'reordered + padded title matches'],
+    ['Senior QA Engineer, Core Automation', true, 'trailing specialization matches'],
+    ['Senior SDET - Payments', true, 'SDET with team suffix matches'],
+    ['QA Lead', true, 'exact title matches'],
+    ['AI Consultant, Financial Services', true, 'AI Consultant matches'],
+    ['Software Development Engineer in Test II', true, 'filler word "in" ignored, level suffix ok'],
+    ['Quality Engineering Manager', true, 'management title matches'],
+    ['QA Engineer', false, 'bare QA Engineer is NOT the listed senior role'],
+    ['Marketing Manager', false, 'unrelated title is not priority'],
+    ['Data Engineer', false, 'adjacent engineering title is not priority'],
+  ];
+  let priOk = 0;
+  for (const [title, expect, label] of priCases) {
+    if (isPriorityTitle(title, QA_PRIORITY) === expect) priOk += 1;
+    else fail(`${label} — "${title}" got ${!expect}`);
+  }
+  if (priOk === priCases.length) pass(`priority-title matching is word-set based (${priOk}/${priCases.length})`);
+
+  if (!isPriorityTitle('Senior QA Engineer', [])) pass('no priority_titles configured → nothing is priority (order unchanged)');
+  else fail('empty priority list still matched');
+
+  const HR_PRIORITY = ['HR Business Partner', 'Talent Acquisition Specialist', 'Senior Recruiter'];
+  if (isPriorityTitle('Senior HR Business Partner, West', HR_PRIORITY)
+      && isPriorityTitle('Talent Acquisition Specialist', HR_PRIORITY)
+      && !isPriorityTitle('Recruiter', HR_PRIORITY))
+    pass('HR priority list behaves the same way');
+  else fail('HR priority matching wrong');
+
+  // --- salary floor -------------------------------------------------------
+  const salCases = [
+    ['$85,000 - $110,000', 85000, 'range → lowest figure'],
+    ['CAD 90000', 90000, 'plain amount with currency'],
+    ['85k-110k', 85000, 'k-suffixed range'],
+    ['$45/hour', 93600, 'hourly annualized at 2080h'],
+    ['Competitive', null, '"Competitive" is not a number'],
+    ['', null, 'empty compensation → null (kept, never treated as 0)'],
+  ];
+  let salOk = 0;
+  for (const [raw, expect, label] of salCases) {
+    if (parseSalaryFloor(raw) === expect) salOk += 1;
+    else fail(`${label} — "${raw}" → ${parseSalaryFloor(raw)}, expected ${expect}`);
+  }
+  if (salOk === salCases.length) pass(`salary parsing handles ranges, k-suffix, hourly, and blanks (${salOk}/${salCases.length})`);
+
+  // The rule that matters: a posting with NO salary must never be filtered out.
+  if (parseSalaryFloor('Competitive') === null && parseSalaryFloor(undefined) === null)
+    pass('missing salary yields null so the row is KEPT, not judged too low');
+  else fail('missing salary would be filtered');
+
+  // Compensation has to be readable off a pipeline row for the floor to apply.
+  const payRow = parsePipelineRow('- [ ] https://x.test/1 | Acme | Senior QA Engineer | Toronto, ON | $95,000 - $120,000 | posted: 2026-07-25');
+  if (payRow?.compensation === '$95,000 - $120,000' && payRow.posted === '2026-07-25')
+    pass('parsePipelineRow reads compensation without swallowing posted:');
+  else fail(`row parse = ${JSON.stringify(payRow)}`);
+
+  const noPayRow = parsePipelineRow('- [ ] https://x.test/2 | Beta | QA Lead | Ottawa, ON | posted: 2026-07-24');
+  if (noPayRow?.compensation === '' && noPayRow.posted === '2026-07-24')
+    pass('a row with no compensation cell does not mistake posted: for salary');
+  else fail(`no-pay row = ${JSON.stringify(noPayRow)}`);
 
   // --- posting age --------------------------------------------------------
   const now = Date.parse('2026-07-24T12:00:00Z');

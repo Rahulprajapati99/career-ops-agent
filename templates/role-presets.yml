@@ -8,8 +8,13 @@
 # portals.yml (user layer, never auto-updated). Fields:
 #
 #   label         Human name, shown by `job-prefs.mjs list`.
-#   titles        The roles the person actually wants. Documentation + the
-#                 starting point for `filter`; not used for matching directly.
+#   titles        The roles the person actually wants. Written to portals.yml as
+#                 `priority_titles`: geo-policy.mjs floats these to the TOP of
+#                 the pipeline (newest-first inside that block), with everything
+#                 else the filter admits below (also newest-first). A title
+#                 matches when every significant word of it appears in the
+#                 posting title, in any order — so "Senior QA Engineer" catches
+#                 "Senior QA Engineer, Platform" but not a bare "QA Engineer".
 #   filter        What lands in portals.yml `title_filter.positive`. Matching is
 #                 case-insensitive SUBSTRING (2-3 letter acronyms match on word
 #                 boundaries), so these must be the SHORTEST distinctive forms —
@@ -20,31 +25,68 @@
 #   search_any    Adzuna `what_or` — ANY of these words. Space separated.
 #   google_query  SerpApi/Google Jobs `q`. OR-joined quoted phrases.
 #   yc_roles      Y Combinator role categories to pull.
+#   min_salary    Optional annual floor. A posting is dropped only when it STATES
+#                 pay below this; postings with no salary shown are kept.
 
 presets:
 
   qa-ai:
     label: QA / AI Automation
+    # Owner's target list (2026-07-25). These become `priority_titles` in
+    # portals.yml: matching postings form a block at the TOP of the pipeline,
+    # newest-first within that block, and everything else the filter admits
+    # follows underneath (also newest-first).
     titles:
-      - AI Automation Analyst
-      - Senior Quality Assurance Analyst
-      - Senior QA
+      - AI QA Engineer
+      - AI Test Engineer
+      - AI Quality Engineer
+      - LLM Evaluation Engineer
+      - AI Evaluation Engineer
+      - AI Automation Engineer
+      - Senior QA Engineer
+      - Senior Software QA Engineer
+      - QA Automation Engineer
+      - Senior Test Automation Engineer
+      - Senior SDET
+      - Software Development Engineer in Test
+      - QA Lead
       - Quality Assurance Lead
-      - Quality Assurance Manager
-      - Software QA Lead
-      - QA AI Analyst
-      - Senior QA AI Analyst
+      - Automation Lead
+      - Quality Engineering Lead
+      - QA Manager
+      - Quality Engineering Manager
+      - AI Product Analyst
+      - AI Implementation Specialist
+      - AI Consultant
+      - AI Business Solution Specialist
+      - AI Business Architecture
+    # The filter is what lets a posting INTO the pipeline; priority_titles only
+    # reorders what is already there. So every title family above needs a term
+    # here, or those roles would never arrive to be prioritized. Shortest
+    # distinctive forms — matching is case-insensitive substring.
     filter:
       - qa
       - quality assurance
-      - quality engineer
+      - quality engineer          # also catches "quality engineering"
+      - test engineer
       - test automation
+      - automation engineer
       - automation analyst
-      - ai automation
+      - automation lead
       - sdet
-    search_any: "qa quality assurance testing automation sdet"
-    google_query: '"quality assurance" OR "QA analyst" OR "QA lead" OR "test automation" OR "AI automation"'
-    yc_roles: [eng, operations]
+      - software development engineer in test
+      - llm evaluation
+      - ai evaluation
+      - ai automation
+      - ai quality
+      - ai test
+      - ai product
+      - ai implementation
+      - ai consultant
+      - ai business
+    search_any: "qa quality assurance testing automation sdet llm evaluation"
+    google_query: '"AI QA engineer" OR "QA automation engineer" OR "SDET" OR "quality assurance" OR "LLM evaluation" OR "AI consultant" OR "test automation"'
+    yc_roles: [eng, operations, product]
 
   hr-talent:
     label: HR / People Operations / Talent Acquisition
@@ -90,6 +132,10 @@ presets:
     search_any: "human resources hr talent acquisition recruiter recruitment people operations"
     google_query: '"human resources" OR "HR business partner" OR "talent acquisition" OR "recruiter" OR "people operations"'
     yc_roles: [operations]
+    # Only drop a posting that STATES pay below this. Rows with no salary shown
+    # are kept and sorted normally (owner rule 2026-07-25) — most boards report
+    # nothing, and silence is not evidence of a low offer.
+    min_salary: 65000
 
   software-engineering:
     label: Software Engineering (the seed default)

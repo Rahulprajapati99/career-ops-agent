@@ -158,6 +158,40 @@ export function setTopLevelScalar(text, key, value) {
 }
 
 /**
+ * Set a top-level LIST key (e.g. `priority_titles:`), replacing it wholesale
+ * when present and inserting it after the comment banner when absent.
+ *
+ * Whole-list replacement is right here (unlike title_filter.negative, which is
+ * merged): priority_titles IS the preset's target list, so switching presets
+ * must not leave the previous track's roles floating at the top of the pipeline.
+ * Exported for tests.
+ *
+ * @param {string} text
+ * @param {string} key
+ * @param {string[]} items
+ * @param {string} [comment] Optional comment line written above a NEW key.
+ */
+export function setTopLevelList(text, key, items, comment = '') {
+  const body = items.map((v) => `  - ${/[:#'"]/.test(v) ? JSON.stringify(v) : v}`);
+  const lines = text.split('\n');
+  const start = lines.findIndex((l) => new RegExp(`^${key}:[ \\t]*$`).test(l));
+  if (start !== -1) {
+    // Replace through the end of the existing block (list items + comments).
+    let end = start + 1;
+    while (end < lines.length && (/^[ \t]+-[ \t]/.test(lines[end]) || /^[ \t]*#/.test(lines[end]) || lines[end].trim() === '')) {
+      // Stop at a blank line that is followed by a new top-level key.
+      if (lines[end].trim() === '' && /^[A-Za-z_]/.test(lines[end + 1] || '')) break;
+      end += 1;
+    }
+    return [...lines.slice(0, start), `${key}:`, ...body, ...lines.slice(end)].join('\n');
+  }
+  let at = lines.findIndex((l) => /^[A-Za-z_]/.test(l));
+  if (at === -1) at = lines.length;
+  const block = [...(comment ? [comment] : []), `${key}:`, ...body, ''];
+  return [...lines.slice(0, at), ...block, ...lines.slice(at)].join('\n');
+}
+
+/**
  * Rewrite the per-source search terms. Adzuna's `what` (ALL words) becomes
  * `what_or` (ANY word) so one request covers a whole role family; SerpApi's `q`
  * takes the OR-joined query; YC's `roles` list takes the preset's categories.
@@ -229,6 +263,23 @@ export function applyPreset(text, preset, globalNegative = []) {
   else out = withTitles;
 
   out = setTopLevelScalar(out, 'max_posting_age_days', String(MAX_POSTING_AGE_DAYS));
+
+  // The preset's target roles drive pipeline ORDER (geo-policy floats them to
+  // the top, newest-first inside the block). Without this the user's own titles
+  // would rank no higher than any other posting the filter admits.
+  const priority = (preset.titles || []).map((s) => String(s).trim()).filter(Boolean);
+  if (priority.length) {
+    out = setTopLevelList(out, 'priority_titles', priority,
+      '# Target roles — floated to the TOP of the pipeline (newest-first within),'
+      + '\n# everything else the filter admits follows below. Written by job-prefs.mjs.');
+  }
+
+  // Salary floor, when the preset sets one. Only drops postings that STATE pay
+  // below it; rows with no salary shown are kept.
+  if (Number.isFinite(Number(preset.min_salary)) && Number(preset.min_salary) > 0) {
+    out = setTopLevelScalar(out, 'min_salary', String(Math.trunc(Number(preset.min_salary))));
+  }
+
   out = setSearchQueries(out, {
     searchAny: preset.search_any,
     googleQuery: preset.google_query,
