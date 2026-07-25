@@ -370,20 +370,21 @@ if (isMain) {
       tier: priorityTitles.length && isPriorityTitle(row.title, priorityTitles) ? 0 : 1,
     });
   }
-  // Ordering, in precedence order:
-  //   1. priority tier — the user's target roles form a block at the top, so the
-  //      jobs they actually want are never buried under fresher near-misses.
-  //      With no priority_titles configured every row is tier 1 and this term
-  //      vanishes, leaving the previous pure newest-first behaviour untouched.
-  //   2. newest posted first — the reading order, preserved WITHIN each tier.
-  //   3. geography rank, breaking ties inside a single day.
+  // Ordering, in precedence order (owner decision 2026-07-25):
+  //   1. newest posted first — STRICT. Freshness is what makes a pipeline worth
+  //      reading down, and applying first means a stale target role can never
+  //      outrank a job posted today.
+  //   2. priority tier — the user's target roles come first AMONG postings of
+  //      the same day. With no priority_titles every row is tier 1 and this term
+  //      vanishes entirely.
+  //   3. geography rank, breaking what is left.
   // Undated rows sort after dated ones (an unknown date is not evidence of
   // freshness).
   kept.sort((a, b) => {
-    if (a.tier !== b.tier) return a.tier - b.tier;
     if (a.posted && b.posted && a.posted !== b.posted) return a.posted < b.posted ? 1 : -1;
     if (a.posted && !b.posted) return -1;
     if (!a.posted && b.posted) return 1;
+    if (a.tier !== b.tier) return a.tier - b.tier;
     return a.rank - b.rank;
   });
   const priorityCount = kept.filter((k) => k.tier === 0).length;
@@ -396,7 +397,7 @@ if (isMain) {
   if (asJson) {
     console.log(JSON.stringify({ kept: kept.length, dropped, deduped, stale, underpaid, priority: priorityCount, reasons }));
   } else {
-    console.log(`🌎 Geo-policy: kept ${kept.length} (${priorityCount} priority-role first, then newest), dropped ${dropped}, stale ${stale}, underpaid ${underpaid}, deduped ${deduped}`);
+    console.log(`🌎 Geo-policy: kept ${kept.length} (newest first; ${priorityCount} target-role rows lead their day), dropped ${dropped}, stale ${stale}, underpaid ${underpaid}, deduped ${deduped}`);
     for (const [r, n] of Object.entries(reasons).sort((a, b) => b[1] - a[1])) {
       console.log(`   ${n.toString().padStart(4)} · ${r}`);
     }

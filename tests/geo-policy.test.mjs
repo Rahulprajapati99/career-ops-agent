@@ -194,6 +194,53 @@ try {
     pass('a row with no compensation cell does not mistake posted: for salary');
   else fail(`no-pay row = ${JSON.stringify(noPayRow)}`);
 
+  // --- ordering contract (owner decision 2026-07-25) ----------------------
+  // Date is STRICT and outranks priority: a target role posted earlier must NOT
+  // jump above a non-target posted today. Priority only orders within one day.
+  // Mirrors the comparator in the CLI so a regression there fails here.
+  const order = (rows) => [...rows].sort((a, b) => {
+    if (a.posted && b.posted && a.posted !== b.posted) return a.posted < b.posted ? 1 : -1;
+    if (a.posted && !b.posted) return -1;
+    if (!a.posted && b.posted) return 1;
+    if (a.tier !== b.tier) return a.tier - b.tier;
+    return a.rank - b.rank;
+  }).map((r) => r.id);
+
+  const mixed = [
+    { id: 'target-old', posted: '2026-07-23', tier: 0, rank: 1 },
+    { id: 'other-today', posted: '2026-07-25', tier: 1, rank: 1 },
+    { id: 'target-today', posted: '2026-07-25', tier: 0, rank: 1 },
+    { id: 'undated-target', posted: null, tier: 0, rank: 1 },
+  ];
+  const got = order(mixed);
+  if (got.join(',') === 'target-today,other-today,target-old,undated-target')
+    pass('strict newest-first; target roles lead only within the same day');
+  else fail(`order = ${got.join(',')}`);
+
+  // The decisive case, stated on its own: freshness beats priority.
+  const twoRows = order([
+    { id: 'target-yesterday', posted: '2026-07-24', tier: 0, rank: 1 },
+    { id: 'other-today', posted: '2026-07-25', tier: 1, rank: 1 },
+  ]);
+  if (twoRows[0] === 'other-today') pass('a non-target posted today outranks a target role from yesterday');
+  else fail(`freshness lost to priority: ${twoRows.join(',')}`);
+
+  // Same day, both tiers → the target role wins.
+  const sameDay = order([
+    { id: 'other', posted: '2026-07-25', tier: 1, rank: 0 },
+    { id: 'target', posted: '2026-07-25', tier: 0, rank: 2 },
+  ]);
+  if (sameDay[0] === 'target') pass('within one day the target role leads, even with a worse geo rank');
+  else fail(`same-day order = ${sameDay.join(',')}`);
+
+  // With no priority list every row is tier 1 → pure newest-first, unchanged.
+  const noPriority = order([
+    { id: 'b', posted: '2026-07-24', tier: 1, rank: 1 },
+    { id: 'a', posted: '2026-07-25', tier: 1, rank: 1 },
+  ]);
+  if (noPriority.join(',') === 'a,b') pass('with no priority_titles the order is plain newest-first');
+  else fail(`no-priority order = ${noPriority.join(',')}`);
+
   // --- posting age --------------------------------------------------------
   const now = Date.parse('2026-07-24T12:00:00Z');
   if (postedAgeDays('2026-07-24', now) === 0 && postedAgeDays('2026-07-17', now) === 7

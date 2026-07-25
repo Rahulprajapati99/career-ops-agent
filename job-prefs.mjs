@@ -264,14 +264,15 @@ export function applyPreset(text, preset, globalNegative = []) {
 
   out = setTopLevelScalar(out, 'max_posting_age_days', String(MAX_POSTING_AGE_DAYS));
 
-  // The preset's target roles drive pipeline ORDER (geo-policy floats them to
-  // the top, newest-first inside the block). Without this the user's own titles
-  // would rank no higher than any other posting the filter admits.
+  // The preset's target roles drive pipeline ORDER: geo-policy keeps the list
+  // strictly newest-first and lets these titles lead among same-day postings.
+  // Without this the user's own titles rank no higher than anything else the
+  // filter admits.
   const priority = (preset.titles || []).map((s) => String(s).trim()).filter(Boolean);
   if (priority.length) {
     out = setTopLevelList(out, 'priority_titles', priority,
-      '# Target roles — floated to the TOP of the pipeline (newest-first within),'
-      + '\n# everything else the filter admits follows below. Written by job-prefs.mjs.');
+      '# Target roles. The pipeline stays strictly newest-posted-first; these'
+      + '\n# titles lead among postings of the same day. Written by job-prefs.mjs.');
   }
 
   // Salary floor, when the preset sets one. Only drops postings that STATE pay

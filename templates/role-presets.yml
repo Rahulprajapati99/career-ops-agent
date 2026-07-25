@@ -9,12 +9,13 @@
 #
 #   label         Human name, shown by `job-prefs.mjs list`.
 #   titles        The roles the person actually wants. Written to portals.yml as
-#                 `priority_titles`: geo-policy.mjs floats these to the TOP of
-#                 the pipeline (newest-first inside that block), with everything
-#                 else the filter admits below (also newest-first). A title
-#                 matches when every significant word of it appears in the
-#                 posting title, in any order — so "Senior QA Engineer" catches
-#                 "Senior QA Engineer, Platform" but not a bare "QA Engineer".
+#                 `priority_titles`. The pipeline is ordered STRICTLY
+#                 newest-posted-first; these titles come first only among
+#                 postings of the SAME day, so a stale target role never
+#                 outranks a job posted today. A title matches when every
+#                 significant word of it appears in the posting title, in any
+#                 order — so "Senior QA Engineer" catches "Senior QA Engineer,
+#                 Platform" but not a bare "QA Engineer".
 #   filter        What lands in portals.yml `title_filter.positive`. Matching is
 #                 case-insensitive SUBSTRING (2-3 letter acronyms match on word
 #                 boundaries), so these must be the SHORTEST distinctive forms —
@@ -33,9 +34,8 @@ presets:
   qa-ai:
     label: QA / AI Automation
     # Owner's target list (2026-07-25). These become `priority_titles` in
-    # portals.yml: matching postings form a block at the TOP of the pipeline,
-    # newest-first within that block, and everything else the filter admits
-    # follows underneath (also newest-first).
+    # portals.yml: the pipeline stays strictly newest-first, and these titles
+    # lead among postings sharing the same date.
     titles:
       - AI QA Engineer
       - AI Test Engineer
