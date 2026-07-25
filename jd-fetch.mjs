@@ -374,10 +374,17 @@ if (isMain) {
 
   const text = flattenBrowserExtract(out);
   if (!looksLikeJd(text)) {
-    console.error(
-      'jd-fetch: the page loaded but holds no job description '
-      + `(${text.length} chars of page chrome — login wall, or a board embedded in a frame we could not resolve).`,
-    );
+    // Distinguish the two very different causes. A SHORT read after the page
+    // named its posting means the board only teases the JD and links out
+    // (RemoteOK ends its 187-char description with "see this and similar jobs on
+    // LinkedIn") — pasting fixes that. A LONG read means we got page chrome, so
+    // the posting is behind a wall or a frame.
+    const teaser = text.length > 0 && text.length < 600;
+    console.error(teaser
+      ? 'jd-fetch: this board only shows a teaser, not the full job description '
+        + `(${text.length} chars). Open the posting and use the employer's own link, or paste the JD text here.`
+      : 'jd-fetch: the page loaded but holds no job description '
+        + `(${text.length} chars of page chrome — login wall, or a board embedded in a frame we could not resolve).`);
     process.exit(1);
   }
   process.stdout.write(text);

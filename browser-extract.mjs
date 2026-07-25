@@ -161,17 +161,89 @@ export function parseArgs(argv) {
 const READ_DOCUMENT = () => {
   const title = (document.querySelector('h1')?.innerText || document.title || '').trim();
 
-  // Main text: prefer <main>/[role=main]/<article>, else body; strip nav chrome.
-  const root =
-    document.querySelector('main, [role="main"], article') || document.body;
-  let text = '';
-  if (root) {
-    const clone = root.cloneNode(true);
-    clone.querySelectorAll('script, style, nav, header, footer, noscript').forEach((el) => el.remove());
-    text = clone.innerText || '';
+  const clean = (el) => {
+    if (!el) return '';
+    const clone = el.cloneNode(true);
+    clone.querySelectorAll('script, style, nav, header, footer, noscript').forEach((x) => x.remove());
+    return clone.innerText || '';
+  };
+
+  // Schema.org JobPosting first — the page's OWN declaration of which posting it
+  // is, which is what Google for Jobs reads. This is a correctness guard, not
+  // just a convenience: a board's detail page often embeds MANY postings (a
+  // RemoteOK page carries the whole listing), so picking a description
+  // container by CSS can silently return a DIFFERENT job's text under this
+  // job's title — measured live, and far worse than extracting nothing, because
+  // the evaluator would score the wrong posting and no one would notice.
+  const postings = [];
+  for (const s of document.querySelectorAll('script[type="application/ld+json"]')) {
+    try {
+      const parsed = JSON.parse(s.textContent || '{}');
+      for (const o of (Array.isArray(parsed) ? parsed : [parsed])) {
+        const type = o && (Array.isArray(o['@type']) ? o['@type'].join(' ') : o['@type']);
+        if (!/JobPosting/i.test(String(type || ''))) continue;
+        postings.push({
+          desc: String(o.description || '')
+            .replace(/<(script|style)[\s\S]*?<\/\1>/gi, ' ')
+            .replace(/<[^>]+>/g, ' '),
+          title: String(o.title || ''),
+          company: String(o.hiringOrganization?.name || ''),
+        });
+      }
+    } catch { /* malformed block — ignore it, try the next */ }
   }
-  return { title, text };
+
+  // Pick the posting THIS page is about, never merely the longest one: a board's
+  // detail page can carry the whole listing's worth of JobPosting blocks, and
+  // "longest description wins" demonstrably returned a different job. Score each
+  // candidate on how much of its title appears in the page's own h1, <title> and
+  // URL slug — the three places the real subject is named.
+  const needle = `${title} ${document.title} ${location.pathname.replace(/[-_/]+/g, ' ')}`.toLowerCase();
+  const score = (p) => {
+    const words = p.title.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2);
+    if (words.length === 0) return 0;
+    return words.filter((w) => needle.includes(w)).length / words.length;
+  };
+  let ld = null;
+  for (const p of postings) {
+    const s = score(p);
+    if (!ld || s > ld.score || (s === ld.score && p.desc.length > ld.desc.length)) ld = { ...p, score: s };
+  }
+
+  // A declared posting is authoritative about WHICH job this is. So when one is
+  // identified we never substitute page text for it — a thin description means
+  // the board only teases the posting (RemoteOK: 187 chars ending "see this and
+  // similar jobs on LinkedIn"), and returning the surrounding page would hand
+  // the caller a NEIGHBOURING job's text under this job's title. Better to
+  // return the thin text and let the caller ask the user to paste the JD.
+  const identified = ld && ld.score >= 0.5;
+  const text = identified ? ld.desc : clean(document.querySelector('main, [role="main"], article') || document.body);
+  return {
+    title: (identified && ld.title ? ld.title : title || '').trim() || title,
+    text,
+    jsonLd: ld ? { title: ld.title, company: ld.company, descChars: ld.desc.trim().length, match: ld.score } : null,
+  };
 };
+
+/**
+ * Cheap "is this actually a job posting?" test, used to decide whether to wait
+ * longer for a JS-rendered board. Deliberately looser than jd-fetch's
+ * looksLikeJd(): this only chooses between reading again or not, so a false
+ * negative costs a few seconds while a false positive costs the whole posting.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function looksLikePosting(text) {
+  const t = String(text || '');
+  if (t.length < 400) return false;
+  const signals = [
+    /responsibilit/i, /qualificat/i, /requirement/i, /what you.{0,12}(do|bring|ll need)/i,
+    /about the role/i, /you will/i, /experience (with|in)/i, /we.{0,3}re looking for/i,
+    /job description/i, /benefits/i, /salary/i, /apply/i,
+  ].filter((re) => re.test(t)).length;
+  return signals >= 2;
+}
 
 // Read the raw DOM inside the page: title, main visible text, and visible
 // anchors. Runs in the browser context; returns plain data only.
@@ -276,6 +348,25 @@ async function main() {
       return;
     }
     let raw = await readDom(page);
+
+    // Boards that render the posting AFTER DOMContentLoaded (RemoteOK, measured
+    // 2026-07-25: 22k chars and no posting at domcontentloaded, the JD only
+    // present once the network settles) would otherwise be reported as "loaded
+    // but holds no job description". Escalate ONLY when the first read does not
+    // look like a posting, so the fast path stays fast for the ~all sites where
+    // it already works.
+    if (mode === 'jd' && !looksLikePosting(raw.text)) {
+      try {
+        await page.waitForLoadState('networkidle', { timeout: Math.min(timeout, 20_000) });
+        await page.waitForTimeout(HYDRATION_WAIT_MS);
+        const second = await readDom(page);
+        // Keep the better of the two: a longer read is only an improvement if it
+        // actually looks like a posting, otherwise it is just more chrome.
+        if (looksLikePosting(second.text) || (second.text || '').length > (raw.text || '').length) {
+          raw = { ...raw, ...second };
+        }
+      } catch { /* networkidle never arrives on chatty pages — keep what we have */ }
+    }
 
     if (mode === 'jd' && (raw.text || '').length < THIN_TEXT_CHARS) {
       // Give an embedded board's iframe a second beat to load, then look inside.
