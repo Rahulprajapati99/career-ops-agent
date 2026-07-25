@@ -9,6 +9,14 @@
  * API path (fast, no Playwright, works on headless VMs); anything else falls
  * back to browser-extract.mjs.
  *
+ * Company-hosted careers pages that EMBED one of those boards
+ * (`https://boomi.com/boomi-jobs/?gh_jid=5786913004`) are handled too: the job
+ * id is in the URL but the board token is only in the page's embed script, so
+ * `discoverEmbeddedBoard()` fetches the page once to resolve it, then takes the
+ * same API path. Without this the browser fallback reads the marketing shell —
+ * the real JD lives inside a cross-origin iframe — and hands a JD-less page to
+ * the evaluator, which fails validation with "missing Block A…G".
+ *
  * Usage:
  *   node jd-fetch.mjs <job-url>     # JD text on stdout; non-zero exit on failure
  */
@@ -17,9 +25,11 @@ import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { decodeEntities } from './providers/_html-entities.mjs';
+import { rejectPrivateOrInvalid } from './liveness-browser.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 /**
  * Convert JD HTML to readable plain text: block-level closers become line
@@ -78,6 +88,109 @@ export function parseJobUrl(url) {
   }
 
   return null;
+}
+
+/**
+ * Recognize an ATS job id embedded in a company-hosted careers page — the
+ * `?gh_jid=` / `?ashby_jid=` form that an embed script turns into a job board.
+ * Only the KIND and ID come from the URL; the board token (org) lives in the
+ * page markup, so this returns no org. Exported for tests.
+ *
+ * @param {string} url
+ * @returns {{ kind: 'greenhouse'|'ashby', id: string } | null}
+ */
+export function parseEmbeddedJobUrl(url) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  // A first-party ATS host is parseJobUrl's job — this path is for the embeds.
+  if (parseJobUrl(url)) return null;
+
+  const ghJid = u.searchParams.get('gh_jid');
+  if (ghJid && /^\d+$/.test(ghJid)) return { kind: 'greenhouse', id: ghJid };
+
+  const ashbyJid = u.searchParams.get('ashby_jid');
+  if (ashbyJid && UUID_RE.test(ashbyJid)) return { kind: 'ashby', id: ashbyJid };
+
+  return null;
+}
+
+/**
+ * Pull the board token out of a company page's embed markup. Greenhouse embeds
+ * load `boards.greenhouse.io/embed/job_board/js?for={token}`; Ashby embeds point
+ * at `jobs.ashbyhq.com/{org}/embed`. Exported for tests.
+ *
+ * @param {string} html
+ * @param {'greenhouse'|'ashby'} kind
+ * @returns {string|null}
+ */
+export function findEmbeddedBoardToken(html, kind) {
+  const s = String(html || '');
+  const patterns = kind === 'greenhouse'
+    ? [
+      /greenhouse\.io\/embed\/job_board(?:\/js)?\?for=([A-Za-z0-9_-]+)/i,
+      /job-boards(?:\.eu)?\.greenhouse\.io\/embed\/job_board(?:\/js)?\?for=([A-Za-z0-9_-]+)/i,
+      /["']?board_?token["']?\s*[:=]\s*["']([A-Za-z0-9_-]+)["']/i,
+      /(?:job-)?boards(?:\.eu)?\.greenhouse\.io\/([A-Za-z0-9_-]+)/i,
+    ]
+    : [
+      /jobs\.ashbyhq\.com\/([A-Za-z0-9._-]+)\/embed/i,
+      /["']?ashby(?:_|-)?(?:job_?board|org)(?:_?name)?["']?\s*[:=]\s*["']([A-Za-z0-9._-]+)["']/i,
+      /jobs\.ashbyhq\.com\/([A-Za-z0-9._-]+)/i,
+    ];
+
+  for (const re of patterns) {
+    const m = s.match(re);
+    // "embed" as the captured org means the pattern matched its own path segment.
+    if (m?.[1] && m[1].toLowerCase() !== 'embed') return m[1];
+  }
+  return null;
+}
+
+/**
+ * Fetch a page's HTML, SSRF-guarded on both the requested and the final URL
+ * (a company careers page legitimately redirects, so redirects are followed —
+ * but never into private space).
+ *
+ * @param {string} url
+ * @returns {Promise<string>}
+ */
+async function fetchHtml(url) {
+  const guard = rejectPrivateOrInvalid(url);
+  if (guard) throw new Error(guard.reason);
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const res = await fetch(url, {
+      headers: { 'user-agent': BROWSER_UA, accept: 'text/html,application/xhtml+xml' },
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    const finalGuard = rejectPrivateOrInvalid(res.url || url);
+    if (finalGuard) throw new Error(`redirected to a blocked host: ${finalGuard.reason}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.text();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Resolve a company-hosted embed URL to the ATS coordinates its API needs.
+ * Returns the same shape as parseJobUrl, so the API path is shared.
+ *
+ * @param {string} url
+ * @returns {Promise<{ kind: 'greenhouse'|'ashby', org: string, id: string } | null>}
+ */
+export async function discoverEmbeddedBoard(url) {
+  const hint = parseEmbeddedJobUrl(url);
+  if (!hint) return null;
+  const org = findEmbeddedBoardToken(await fetchHtml(url), hint.kind);
+  return org ? { kind: hint.kind, org, id: hint.id } : null;
 }
 
 async function fetchJson(url) {
@@ -150,6 +263,63 @@ export async function fetchViaApi(parsed) {
   return null;
 }
 
+/**
+ * Phrases that only a real posting carries. A careers landing page, a cookie
+ * wall, or the marketing shell around an embedded board hits at most one.
+ */
+const JD_SIGNALS = [
+  /responsibilit/i,
+  /qualificat/i,
+  /requirements?\b/i,
+  /what you.{0,3}ll (?:do|bring|own|be doing)/i,
+  /years? of (?:relevant )?experience/i,
+  /nice[- ]to[- ]have|preferred (?:skills|qualifications|experience)/i,
+  /job description|about (?:the|this) role|the opportunity/i,
+  /compensation|salary range|benefits package|equal opportunity/i,
+];
+
+/**
+ * True when extracted page text plausibly IS a job description.
+ *
+ * The evaluator needs real JD text; handed a JD-less shell it burns an LLM call
+ * and fails with an opaque "missing Block A…G". Failing here instead lets the
+ * bot say "paste the JD text" — the thing that actually works. Exported for tests.
+ *
+ * @param {string} text
+ * @returns {boolean}
+ */
+export function looksLikeJd(text) {
+  const s = String(text || '');
+  if (s.length < 500) return false;
+  return JD_SIGNALS.filter((re) => re.test(s)).length >= 2;
+}
+
+/**
+ * Turn browser-extract.mjs's compact JSON ({url,title,text}) into the plain
+ * "Title: …\n\n<body>" shape the API path emits, so the evaluator always sees
+ * prose rather than a JSON blob. Non-JSON input passes through. Exported for tests.
+ *
+ * @param {string} stdout
+ * @returns {string}
+ */
+export function flattenBrowserExtract(stdout) {
+  const trimmed = String(stdout || '').trim();
+  if (!trimmed.startsWith('{')) return trimmed;
+  let parsed;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return trimmed;
+  }
+  if (typeof parsed?.text !== 'string') return trimmed;
+  return [
+    parsed.title ? `Title: ${parsed.title}` : '',
+    parsed.url ? `URL: ${parsed.url}` : '',
+    '',
+    parsed.text,
+  ].filter((line, i) => line !== '' || i === 2).join('\n').trim();
+}
+
 // ---------------------------------------------------------------------------
 // CLI
 // ---------------------------------------------------------------------------
@@ -161,7 +331,17 @@ if (isMain) {
     process.exit(2);
   }
 
-  const parsed = parseJobUrl(url);
+  let parsed = parseJobUrl(url);
+  if (!parsed) {
+    // Company-hosted page embedding an ATS board (?gh_jid= / ?ashby_jid=).
+    try {
+      parsed = await discoverEmbeddedBoard(url);
+      if (parsed) console.error(`jd-fetch: resolved embedded ${parsed.kind} board "${parsed.org}" from the page`);
+    } catch (err) {
+      console.error(`jd-fetch: embedded-board discovery failed (${err.message}) — trying browser extraction`);
+    }
+  }
+
   if (parsed) {
     try {
       const jd = await fetchViaApi(parsed);
@@ -176,13 +356,13 @@ if (isMain) {
   }
 
   // Fallback: full browser extraction (needs Playwright browsers installed).
+  let out;
   try {
-    const out = execFileSync(process.execPath, [join(__dirname, 'browser-extract.mjs'), url], {
+    out = execFileSync(process.execPath, [join(__dirname, 'browser-extract.mjs'), url], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
       maxBuffer: 1024 * 1024 * 10,
     });
-    process.stdout.write(out);
   } catch (err) {
     // Surface the browser's real failure so the bot can relay an actionable
     // cause (e.g. "Executable doesn't exist" → chromium not installed).
@@ -191,4 +371,14 @@ if (isMain) {
     console.error(`jd-fetch: browser extraction failed too — ${tail}`);
     process.exit(1);
   }
+
+  const text = flattenBrowserExtract(out);
+  if (!looksLikeJd(text)) {
+    console.error(
+      'jd-fetch: the page loaded but holds no job description '
+      + `(${text.length} chars of page chrome — login wall, or a board embedded in a frame we could not resolve).`,
+    );
+    process.exit(1);
+  }
+  process.stdout.write(text);
 }

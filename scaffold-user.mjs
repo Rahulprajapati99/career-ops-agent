@@ -72,6 +72,9 @@ export function scaffoldUser(userId, opts = {}) {
     for (const f of ['profile.yml', 'cv-facts.json', 'plugins.yml', 'benchmarks.yml']) {
       seed(join(from, 'config', f), join(root, 'config', f));
     }
+    for (const f of ['_profile.md', '_custom.md']) {
+      seed(join(from, 'modes', f), join(root, 'modes', f));
+    }
     for (const d of ['data', 'reports', 'output', 'jds', 'interview-prep']) {
       copyTreeNoOverwrite(join(from, d), join(root, d));
     }
@@ -81,6 +84,12 @@ export function scaffoldUser(userId, opts = {}) {
   // Family Edition US/CA seed; the upstream example is the fallback.
   seed(join(REPO_ROOT, 'config', 'profile.example.yml'), join(root, 'config', 'profile.yml'));
   seed(join(REPO_ROOT, 'config', 'cv-facts.example.json'), join(root, 'config', 'cv-facts.json'));
+  // Personalization layer. The evaluator reads modes/_profile.md from the USER
+  // root (system modes stay shared), so without a seed here every run warns
+  // "_profile.md not found" and scores the candidate with no archetypes or
+  // narrative. doctor.mjs auto-copies the same two templates in single-user mode.
+  seed(join(REPO_ROOT, 'modes', '_profile.template.md'), join(root, 'modes', '_profile.md'));
+  seed(join(REPO_ROOT, 'modes', '_custom.template.md'), join(root, 'modes', '_custom.md'));
   seed(join(REPO_ROOT, 'templates', 'portals.family.yml'), join(root, 'portals.yml'))
     || seed(join(REPO_ROOT, 'templates', 'portals.example.yml'), join(root, 'portals.yml'));
 

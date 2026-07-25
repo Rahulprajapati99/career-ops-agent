@@ -43,6 +43,9 @@ const DEFAULT_TIMEOUT_MS = 15_000;
 const HYDRATION_WAIT_MS = 2_000;
 const JD_TEXT_CAP = 12_000;     // plenty for a JD; a fraction of a full snapshot
 const DEFAULT_LISTING_MAX = 200;
+// Below this, the main frame almost certainly holds page chrome rather than a
+// posting — worth paying a second hydration wait to look inside child frames.
+const THIN_TEXT_CHARS = 800;
 
 // Anchor labels that are navigation chrome, not job postings. Kept small and
 // lowercase; matched against the trimmed label.
@@ -152,33 +155,74 @@ export function parseArgs(argv) {
   return { url, mode, max, maxChars, timeout };
 }
 
+// Title + main visible text of ONE document. Serialized into the browser
+// context, so it must stay self-contained (no closure over module scope).
+// Used for the main frame and, when that comes back thin, for child frames.
+const READ_DOCUMENT = () => {
+  const title = (document.querySelector('h1')?.innerText || document.title || '').trim();
+
+  // Main text: prefer <main>/[role=main]/<article>, else body; strip nav chrome.
+  const root =
+    document.querySelector('main, [role="main"], article') || document.body;
+  let text = '';
+  if (root) {
+    const clone = root.cloneNode(true);
+    clone.querySelectorAll('script, style, nav, header, footer, noscript').forEach((el) => el.remove());
+    text = clone.innerText || '';
+  }
+  return { title, text };
+};
+
 // Read the raw DOM inside the page: title, main visible text, and visible
 // anchors. Runs in the browser context; returns plain data only.
 async function readDom(page) {
-  return page.evaluate(() => {
-    const title = (document.querySelector('h1')?.innerText || document.title || '').trim();
+  const { title, text } = await page.evaluate(READ_DOCUMENT);
+  const anchors = await page.evaluate(() => Array.from(document.querySelectorAll('a[href]'))
+    .filter((el) => {
+      if (el.closest('nav, header, footer')) return false;
+      const style = window.getComputedStyle(el);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      return el.getClientRects().length > 0;
+    })
+    .map((el) => ({ href: el.getAttribute('href') || '', label: (el.innerText || '').trim() })));
 
-    // Main text: prefer <main>/[role=main]/<article>, else body; strip nav chrome.
-    const root =
-      document.querySelector('main, [role="main"], article') || document.body;
-    let text = '';
-    if (root) {
-      const clone = root.cloneNode(true);
-      clone.querySelectorAll('script, style, nav, header, footer, noscript').forEach((el) => el.remove());
-      text = clone.innerText || '';
+  return { title, text, anchors };
+}
+
+/**
+ * Of several {title,text} reads, the one with the most text. Pure — exported
+ * for tests. Returns an empty read when given nothing usable.
+ * @param {Array<{title?: string, text?: string}>} reads
+ */
+export function pickRichestRead(reads) {
+  const usable = (Array.isArray(reads) ? reads : []).filter((r) => r && typeof r.text === 'string');
+  return usable.reduce((best, r) => (r.text.length > best.text.length ? r : best), { title: '', text: '' });
+}
+
+/**
+ * Recover a JD that renders inside an embedded board's iframe.
+ *
+ * Company careers pages routinely embed Greenhouse/Ashby, which inject a
+ * cross-origin iframe. `document.body.innerText` in the main frame then returns
+ * only the marketing shell, so the caller ships a JD-less page downstream. When
+ * the main read is thin, read every child frame and keep the richest.
+ *
+ * @param {object} page - Playwright Page.
+ * @param {{title: string, text: string}} mainRead
+ */
+async function readRichestFrame(page, mainRead) {
+  const reads = [mainRead];
+  for (const frame of page.frames()) {
+    if (frame === page.mainFrame()) continue;
+    try {
+      reads.push(await frame.evaluate(READ_DOCUMENT));
+    } catch {
+      // Detached, blocked by the route guard, or still navigating — skip it.
     }
-
-    const anchors = Array.from(document.querySelectorAll('a[href]'))
-      .filter((el) => {
-        if (el.closest('nav, header, footer')) return false;
-        const style = window.getComputedStyle(el);
-        if (style.display === 'none' || style.visibility === 'hidden') return false;
-        return el.getClientRects().length > 0;
-      })
-      .map((el) => ({ href: el.getAttribute('href') || '', label: (el.innerText || '').trim() }));
-
-    return { title, text, anchors };
-  });
+  }
+  const best = pickRichestRead(reads);
+  // A frame that won brings its own <h1>; fall back to the shell's title.
+  return { title: best.title || mainRead.title, text: best.text };
 }
 
 async function main() {
@@ -231,7 +275,14 @@ async function main() {
       process.exitCode = 1;
       return;
     }
-    const raw = await readDom(page);
+    let raw = await readDom(page);
+
+    if (mode === 'jd' && (raw.text || '').length < THIN_TEXT_CHARS) {
+      // Give an embedded board's iframe a second beat to load, then look inside.
+      await page.waitForTimeout(HYDRATION_WAIT_MS);
+      const recovered = await readRichestFrame(page, { title: raw.title, text: raw.text || '' });
+      raw = { ...raw, ...recovered };
+    }
 
     const result = mode === 'listing'
       ? normalizeListing(raw.anchors, finalUrl, max)

@@ -342,7 +342,10 @@ try {
   validateEvaluationShape(evaluationText);
 } catch (err) {
   console.error('❌  Gemini output failed validation:', err.message);
-  console.error('    No report was saved. Retry, lower temperature, or use the Claude pipeline for this JD.');
+  // Every block missing almost always means the INPUT was not a job description
+  // (an extracted page shell, a login wall), not that the model misbehaved.
+  console.error(`    No report was saved. The JD was ${jdText.length} chars — if that looks short, the page`);
+  console.error('    likely yielded no posting text; paste the job description instead. Otherwise retry.');
   process.exit(1);
 }
 
