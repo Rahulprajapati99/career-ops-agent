@@ -4,16 +4,25 @@
  * geo-policy.mjs — Family Edition: apply a per-user geography policy to the
  * scanned pipeline (runs after scan.mjs, rewrites data/pipeline.md in place).
  *
- * Policy (owner decision 2026-07-23), tuned for a CANADIAN worker:
- *   - Canada, ANY modality (on-site / hybrid / remote) ........... KEEP
+ * Policy (owner decision 2026-07-24), tuned for a CANADIAN worker:
+ *   - REMOTE, anywhere in Canada (every province) ............... KEEP
+ *   - Canada on-site / hybrid, in Vancouver / Calgary / Toronto . KEEP
+ *   - Canada on-site / hybrid, any OTHER city ................... DROP
  *   - US, REMOTE only ........................................... KEEP
  *   - US on-site / hybrid ....................................... DROP
- *   - Outside North America ..................................... DROP
+ *   - India, ANY modality — only with the India toggle on ....... KEEP
+ *   - Outside those .............................................. DROP
  *   - Location unknown/blank .................................... KEEP (don't
  *     penalize missing data — same convention as scan.mjs)
  *
- * The surviving jobs are REORDERED so remote roles sit at the top of the
- * pipeline (highest priority), then Canada on-site/hybrid, then unknowns.
+ * Survivors are ordered NEWEST POSTED FIRST (the owner reads the top of the
+ * list), with the geography rank above as the tie-breaker within a single day
+ * and for postings a provider gave no date for.
+ *
+ * Rows whose posting date has aged past `max_posting_age_days` (portals.yml,
+ * default 7) are pruned here too. scan.mjs only applies that cutoff at INSERT
+ * time, so without this pass a pipeline that is rescanned daily keeps showing
+ * postings that were fresh a fortnight ago.
  *
  * Country detection is robust: full country/state/province names, trailing
  * two-letter codes ("Austin, TX" / "Toronto, ON"), and major NA cities.
@@ -31,6 +40,9 @@ const USER_ROOT = process.env.CAREER_OPS_USER_ROOT
   ? resolve(process.env.CAREER_OPS_USER_ROOT)
   : process.cwd();
 
+// House rule: the pipeline only ever shows the last week of postings.
+export const DEFAULT_MAX_POSTING_AGE_DAYS = 7;
+
 const US_STATE_NAMES = ['alabama', 'alaska', 'arizona', 'arkansas', 'california', 'colorado', 'connecticut', 'delaware', 'florida', 'hawaii', 'idaho', 'illinois', 'indiana', 'iowa', 'kansas', 'kentucky', 'louisiana', 'maine', 'maryland', 'massachusetts', 'michigan', 'minnesota', 'mississippi', 'missouri', 'montana', 'nebraska', 'nevada', 'new hampshire', 'new jersey', 'new mexico', 'new york', 'north carolina', 'north dakota', 'ohio', 'oklahoma', 'oregon', 'pennsylvania', 'rhode island', 'south carolina', 'south dakota', 'tennessee', 'texas', 'utah', 'vermont', 'virginia', 'washington', 'west virginia', 'wisconsin', 'wyoming'];
 const US_CODES = new Set(['AL', 'AK', 'AZ', 'AR', 'CA', 'CO', 'CT', 'DE', 'FL', 'GA', 'HI', 'ID', 'IL', 'IN', 'IA', 'KS', 'KY', 'LA', 'ME', 'MD', 'MA', 'MI', 'MN', 'MS', 'MO', 'MT', 'NE', 'NV', 'NH', 'NJ', 'NM', 'NY', 'NC', 'ND', 'OH', 'OK', 'OR', 'PA', 'RI', 'SC', 'SD', 'TN', 'TX', 'UT', 'VT', 'VA', 'WA', 'WV', 'WI', 'WY', 'DC']);
 const CA_CODES = new Set(['ON', 'QC', 'BC', 'AB', 'MB', 'SK', 'NS', 'NB', 'NL', 'PE', 'YT', 'NT', 'NU']);
@@ -42,6 +54,14 @@ const US_RE = /\b(united states|u\.?s\.?a?\.?|u\.s\.)\b/i;
 // How remote roles are labeled across boards: explicit "remote", remote-board
 // region tags ("Worldwide", "Anywhere", "USA Only", "Americas"), and synonyms.
 const REMOTE_RE = /\bremote\b|\bwfh\b|work[ -]?from[ -]?home|\banywhere\b|\bworldwide\b|\bglobal\b|\bdistributed\b|\btelecommute\b|\bvirtual\b|home[ -]?based|\b(?:us|usa|u\.s\.?)\s+only\b|\bnorth america\b|\bamericas\b/i;
+
+// The only Canadian cities the owner will commute to. A Canadian role that is
+// NOT remote has to be in one of these three; anywhere else in Canada is a drop
+// even though the country matches. Metro spellings are included because boards
+// label the same office a dozen ways ("Toronto, ON", "Greater Toronto Area",
+// "North York"). Deliberately conservative: a suburb only appears here when it
+// is unambiguously that metro.
+const HYBRID_CITY_RE = /\b(vancouver|calgary|toronto|greater toronto|gta|north york|etobicoke|scarborough|downtown toronto|greater vancouver|downtown vancouver)\b/i;
 
 // India (Phase 8 toggle). Major tech hubs + the country name; deliberately
 // checked BEFORE the two-letter code rule, since "IN" also means Indiana.
@@ -68,8 +88,10 @@ export function detectCountry(location) {
 /**
  * Decide keep/drop + priority rank for one posting.
  *
- * rank: 0 = remote (top), 1 = Canada on-site/hybrid, 2 = unknown location,
- *       3 = India on-site (only when the India toggle is on).
+ * rank is the TIE-BREAKER only — the pipeline is ordered newest-posted-first.
+ * 0 = remote (any province, or US-remote), 1 = Canada hybrid/on-site in one of
+ * the three commutable cities, 2 = unknown location, 3 = India on-site (only
+ * when the India toggle is on).
  *
  * @param {{title?: string, location?: string}} row
  * @param {{includeIndia?: boolean}} [opts] - Phase 8 toggle. Off by default, so
@@ -87,10 +109,48 @@ export function classifyRow({ title, location }, { includeIndia = false } = {}) 
   }
   // Remote (Canada-remote, US-remote, or region/worldwide-remote) is top priority.
   if (remote) return { keep: true, reason: 'Remote', rank: 0 };
-  if (country === 'CA') return { keep: true, reason: 'Canada (on-site/hybrid)', rank: 1 };
+  if (country === 'CA') {
+    // Canada, but someone has to physically go in: only the three hub cities.
+    return HYBRID_CITY_RE.test(String(location || ''))
+      ? { keep: true, reason: 'Canada hybrid/on-site (hub city)', rank: 1 }
+      : { keep: false, reason: 'Canada on-site outside hub cities', rank: 9 };
+  }
   if (country === 'US') return { keep: false, reason: 'US on-site (excluded)', rank: 9 };
   if (!String(location || '').trim()) return { keep: true, reason: 'Location unknown', rank: 2 };
   return { keep: false, reason: 'Outside North America', rank: 9 };
+}
+
+/**
+ * Max posting age, in days, from the user's portals.yml. Defaults to 7 — the
+ * global house rule is a one-week-old pipeline, so a user file that predates
+ * the key still gets the cutoff.
+ *
+ * @param {string} [portalsPath]
+ * @returns {number}
+ */
+export function maxPostingAgeDays(portalsPath) {
+  const p = portalsPath || process.env.CAREER_OPS_PORTALS || join(USER_ROOT, 'portals.yml');
+  try {
+    if (!existsSync(p)) return DEFAULT_MAX_POSTING_AGE_DAYS;
+    const raw = (yaml.load(readFileSync(p, 'utf-8')) || {}).max_posting_age_days;
+    const n = Number(raw);
+    return Number.isInteger(n) && n > 0 ? n : DEFAULT_MAX_POSTING_AGE_DAYS;
+  } catch { return DEFAULT_MAX_POSTING_AGE_DAYS; }
+}
+
+/**
+ * Age a `posted: YYYY-MM-DD` stamp in whole days, or null when the row carries
+ * no date. Exported for tests (`now` is injectable).
+ *
+ * @param {string|null} posted
+ * @param {number} [now]
+ * @returns {number|null}
+ */
+export function postedAgeDays(posted, now = Date.now()) {
+  if (!posted) return null;
+  const t = Date.parse(`${posted}T00:00:00Z`);
+  if (!Number.isFinite(t)) return null;
+  return Math.floor((now - t) / 86_400_000);
 }
 
 /**
@@ -114,7 +174,16 @@ export function parsePipelineRow(line) {
   const m = line.match(/^- \[ \]\s*(.+)$/);
   if (!m) return null;
   const parts = m[1].split('|').map((s) => s.trim());
-  return { url: parts[0] || '', company: parts[1] || '', title: parts[2] || '', location: parts[3] || '' };
+  // `posted:` is a LABELED segment (scan.mjs appends it after the positional
+  // cells), so find it by label rather than by index — compensation and note
+  // shift the trailing columns around.
+  const posted = parts
+    .map((p) => p.match(/^posted:\s*(\d{4}-\d{2}-\d{2})$/i)?.[1])
+    .find(Boolean) || null;
+  return {
+    url: parts[0] || '', company: parts[1] || '', title: parts[2] || '',
+    location: parts[3] || '', posted,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -145,8 +214,18 @@ if (isMain) {
   const seen = new Set();
   let dropped = 0;
   let deduped = 0;
+  let stale = 0;
   const includeIndia = indiaEnabled();
+  const maxAge = maxPostingAgeDays();
   for (const { line, row } of rows) {
+    // Freshness first: an aged-out posting is not worth classifying. Rows with
+    // no date always survive — same "don't penalize missing data" convention.
+    const age = postedAgeDays(row.posted);
+    if (age !== null && age > maxAge) {
+      stale += 1;
+      reasons[`Older than ${maxAge} days`] = (reasons[`Older than ${maxAge} days`] || 0) + 1;
+      continue;
+    }
     const c = classifyRow(row, { includeIndia });
     reasons[c.reason] = (reasons[c.reason] || 0) + 1;
     if (!c.keep) { dropped += 1; continue; }
@@ -155,10 +234,17 @@ if (isMain) {
     const fp = `${row.company}|${row.title}|${row.location}`.toLowerCase().replace(/\s+/g, ' ').trim();
     if (seen.has(fp)) { deduped += 1; continue; }
     seen.add(fp);
-    kept.push({ line, rank: c.rank });
+    kept.push({ line, rank: c.rank, posted: row.posted });
   }
-  // Stable sort by rank → remote first, then Canada on-site/hybrid, then unknown.
-  kept.sort((a, b) => a.rank - b.rank);
+  // Newest posted first — what the owner actually reads down. Undated rows sort
+  // after every dated one (an unknown date is not evidence of freshness), and
+  // the geography rank breaks ties inside a single day.
+  kept.sort((a, b) => {
+    if (a.posted && b.posted && a.posted !== b.posted) return a.posted < b.posted ? 1 : -1;
+    if (a.posted && !b.posted) return -1;
+    if (!a.posted && b.posted) return 1;
+    return a.rank - b.rank;
+  });
 
   // Trim trailing blank header lines, then re-emit header + sorted kept rows.
   while (header.length && header[header.length - 1].trim() === '') header.pop();
@@ -166,9 +252,9 @@ if (isMain) {
   writeFileSync(pipelinePath, out);
 
   if (asJson) {
-    console.log(JSON.stringify({ kept: kept.length, dropped, deduped, reasons }));
+    console.log(JSON.stringify({ kept: kept.length, dropped, deduped, stale, reasons }));
   } else {
-    console.log(`🌎 Geo-policy: kept ${kept.length} (remote first), dropped ${dropped}, deduped ${deduped}`);
+    console.log(`🌎 Geo-policy: kept ${kept.length} (newest first), dropped ${dropped}, stale ${stale}, deduped ${deduped}`);
     for (const [r, n] of Object.entries(reasons).sort((a, b) => b[1] - a[1])) {
       console.log(`   ${n.toString().padStart(4)} · ${r}`);
     }

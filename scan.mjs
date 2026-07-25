@@ -44,6 +44,7 @@ import { classifyFetchError } from './verify-portals.mjs';
 import { fingerprintText, findCrossListings } from './fingerprint-core.mjs';
 import { resolveColumns, parseTrackerRow } from './tracker-parse.mjs';
 import { normalizeCompany } from './tracker-utils.mjs';
+import { DEFAULT_MAX_POSTING_AGE_DAYS } from './geo-policy.mjs';
 
 try {
   const { config } = await import('dotenv');
@@ -1342,7 +1343,12 @@ async function main() {
   }
 
   const locationFilter = buildLocationFilter(config.location_filter);
-  const postingAgeFilter = buildPostingAgeFilter(config.max_posting_age_days);
+  // House rule: only the last week of postings. An explicit portals.yml value
+  // still wins — the default exists so user files written before the rule (and
+  // any new scaffold) get the cutoff without being edited one by one.
+  const postingAgeFilter = buildPostingAgeFilter(
+    config.max_posting_age_days ?? DEFAULT_MAX_POSTING_AGE_DAYS,
+  );
   const salaryFilter = buildSalaryFilter(config.salary_filter);
   const trustValidator = buildTrustValidator(config.trust_filter);
   const contentFilter = buildContentFilter(config.content_filter);

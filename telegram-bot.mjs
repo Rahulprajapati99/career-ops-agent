@@ -659,20 +659,22 @@ async function handleJobs(chatId, page = 1) {
     await bot.sendMessage(chatId, '📭 No pending jobs in your pipeline — run /scan to discover new ones.');
     return;
   }
-  // Pipeline is priority-ordered by geo-policy (remote first). Paginate so the
-  // whole list is reachable from Telegram (no need to open pipeline.md).
+  // Pipeline is ordered by geo-policy: newest posting first, geography rank as
+  // the tie-break. Paginate so the whole list is reachable from Telegram.
   const PER_PAGE = 8;
   const pages = Math.ceil(rows.length / PER_PAGE);
   const p = Math.min(Math.max(1, page || 1), pages);
   const start = (p - 1) * PER_PAGE;
   const slice = rows.slice(start, start + PER_PAGE);
 
-  let msg = `🗂 *Matched jobs — ${rows.length} total* (remote first) · page ${p}/${pages}\n\n`;
+  let msg = `🗂 *Matched jobs — ${rows.length} total* (newest first) · page ${p}/${pages}\n\n`;
   slice.forEach((row, i) => {
     const parts = row.replace(/^- \[ \]\s*/, '').split('|').map((s) => s.trim());
     const [url, company, title, location] = parts;
     const remoteTag = /\bremote\b|anywhere|worldwide|americas/i.test(location || '') ? ' 🏠' : '';
+    const posted = parts.map((c) => c.match(/^posted:\s*(\d{4}-\d{2}-\d{2})$/i)?.[1]).find(Boolean);
     msg += `*${start + i + 1}. ${company || '?'}* — ${title || '?'}${remoteTag}\n`;
+    if (posted) msg += `   🗓 ${posted}\n`;
     if (location) msg += `   📍 ${location}\n`;
     if (url) msg += `   ${url}\n`;
     msg += '\n';

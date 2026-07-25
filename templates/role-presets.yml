@@ -1,0 +1,115 @@
+# role-presets.yml — reusable target-role profiles for `job-prefs.mjs`.
+#
+# One preset per career track. `node job-prefs.mjs set <user> --preset <name>`
+# writes it into that user's portals.yml, so every family member gets a scan
+# aimed at their own roles instead of the "software engineer" seed default.
+#
+# Add a preset here (system layer, shared) rather than hand-editing each user's
+# portals.yml (user layer, never auto-updated). Fields:
+#
+#   label         Human name, shown by `job-prefs.mjs list`.
+#   titles        The roles the person actually wants. Documentation + the
+#                 starting point for `filter`; not used for matching directly.
+#   filter        What lands in portals.yml `title_filter.positive`. Matching is
+#                 case-insensitive SUBSTRING (2-3 letter acronyms match on word
+#                 boundaries), so these must be the SHORTEST distinctive forms —
+#                 "quality assurance" catches "Senior Quality Assurance Analyst",
+#                 whereas the full title would miss the unprefixed posting.
+#                 Seniority is not filtered here: match-jobs.mjs ranks on the
+#                 CV's seniority, and over-filtering yields an empty pipeline.
+#   search_any    Adzuna `what_or` — ANY of these words. Space separated.
+#   google_query  SerpApi/Google Jobs `q`. OR-joined quoted phrases.
+#   yc_roles      Y Combinator role categories to pull.
+
+presets:
+
+  qa-ai:
+    label: QA / AI Automation
+    titles:
+      - AI Automation Analyst
+      - Senior Quality Assurance Analyst
+      - Senior QA
+      - Quality Assurance Lead
+      - Quality Assurance Manager
+      - Software QA Lead
+      - QA AI Analyst
+      - Senior QA AI Analyst
+    filter:
+      - qa
+      - quality assurance
+      - quality engineer
+      - test automation
+      - automation analyst
+      - ai automation
+      - sdet
+    search_any: "qa quality assurance testing automation sdet"
+    google_query: '"quality assurance" OR "QA analyst" OR "QA lead" OR "test automation" OR "AI automation"'
+    yc_roles: [eng, operations]
+
+  hr-talent:
+    label: HR / People Operations / Talent Acquisition
+    titles:
+      - Human Resources Manager
+      - HR Manager
+      - Human Resources Business Partner
+      - HR Business Partner
+      - Senior Human Resources Business Partner
+      - Lead HR Business Partner
+      - Human Resources Generalist
+      - Senior Human Resources Generalist
+      - Human Resources Advisor
+      - Senior Human Resources Advisor
+      - People Operations Manager
+      - Senior People Operations Manager
+      - HR Operations Manager
+      - HR Services Manager
+      - Talent Acquisition Manager
+      - Talent Acquisition Partner
+      - Senior Talent Acquisition Partner
+      - Talent Acquisition Specialist
+      - Senior Talent Acquisition Specialist
+      - Talent Acquisition Advisor
+      - Senior Talent Acquisition Advisor
+      - Senior Recruiter
+      - Corporate Recruiter
+      - Executive Recruiter
+      - Recruitment Manager
+      - Recruitment Consultant
+      - Senior Recruitment Consultant
+      - Talent Acquisition Lead
+      - HR Consultant
+      - Senior HR Consultant
+    filter:
+      - hr
+      - human resources
+      - people operations
+      - talent acquisition
+      - recruiter
+      - recruiting
+      - recruitment
+    search_any: "human resources hr talent acquisition recruiter recruitment people operations"
+    google_query: '"human resources" OR "HR business partner" OR "talent acquisition" OR "recruiter" OR "people operations"'
+    yc_roles: [operations]
+
+  software-engineering:
+    label: Software Engineering (the seed default)
+    titles:
+      - Software Engineer
+      - Senior Software Engineer
+      - Backend Engineer
+      - Full Stack Developer
+    filter:
+      - engineer
+      - developer
+      - swe
+    search_any: "software engineer developer backend"
+    google_query: '"software engineer" OR "backend engineer" OR "full stack developer"'
+    yc_roles: [eng]
+
+# Negative keywords applied to EVERY preset — roles nobody in the family wants.
+# Merged with whatever the user's portals.yml already lists.
+global_negative:
+  - unpaid
+  - volunteer
+  - intern
+  - internship

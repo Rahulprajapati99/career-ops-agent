@@ -12,7 +12,10 @@
 //
 // Wire in via a `job_boards:` entry with `provider: adzuna`. Per-entry config:
 //   country          — Adzuna country code (default "us"; e.g. us, ca, in, gb)
-//   what             — keyword query (e.g. "software engineer")
+//   what             — keyword query, ALL words must appear ("software engineer")
+//   what_or          — keyword query, ANY word matches ("qa quality assurance
+//                      testing") — one request covers a whole role family
+//   what_exclude     — words that disqualify a posting, optional
 //   where            — location query (e.g. "Toronto, ON")
 //   category         — Adzuna category tag (e.g. "it-jobs"), optional
 //   max_days_old     — recency window in days (default 7)
@@ -145,6 +148,16 @@ export default {
       u.searchParams.set('sort_by', 'date');
       if (typeof entry?.what === 'string' && entry.what.trim()) {
         u.searchParams.set('what', entry.what.trim());
+      }
+      // `what` ANDs its words, which makes one entry per role title the only way
+      // to cover a family ("quality assurance" misses "QA Engineer"). `what_or`
+      // matches ANY word, so a whole track fits in a single request — what
+      // job-prefs.mjs writes. Both may coexist: Adzuna intersects them.
+      if (typeof entry?.what_or === 'string' && entry.what_or.trim()) {
+        u.searchParams.set('what_or', entry.what_or.trim());
+      }
+      if (typeof entry?.what_exclude === 'string' && entry.what_exclude.trim()) {
+        u.searchParams.set('what_exclude', entry.what_exclude.trim());
       }
       if (typeof entry?.where === 'string' && entry.where.trim()) {
         u.searchParams.set('where', entry.where.trim());

@@ -140,6 +140,9 @@ const SYSTEM_PATHS = [
   'india-toggle.mjs',
   // Migration that adds the YC + Wellfound sources to an existing portals.yml.
   'add-job-sources.mjs',
+  // Per-user target roles: presets + the writer that applies them.
+  'job-prefs.mjs',
+  'templates/role-presets.yml',
   // Phase 7 — multi-user web front door.
   'web-gateway.mjs',
   'lib/telegram-auth.mjs',
