@@ -140,6 +140,10 @@ const SYSTEM_PATHS = [
   'india-toggle.mjs',
   // Migration that adds the YC + Wellfound sources to an existing portals.yml.
   'add-job-sources.mjs',
+  // Derives a scan profile from the resume of whoever just joined
+  // (job-prefs.mjs --from-cv). NOTE: no apostrophes in comments here —
+  // extractArrayFromSource() treats any quote as a string delimiter.
+  'derive-prefs.mjs',
   // Per-user target roles: presets + the writer that applies them.
   'job-prefs.mjs',
   'templates/role-presets.yml',

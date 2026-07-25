@@ -45,6 +45,9 @@ presets:
       - AI Automation Engineer
       - Senior QA Engineer
       - Senior Software QA Engineer
+      - Senior QA Analyst
+      - Senior Quality Assurance Analyst
+      - Software Quality Assurance Analyst
       - QA Automation Engineer
       - Senior Test Automation Engineer
       - Senior SDET
@@ -98,6 +101,7 @@ presets:
       - Senior Human Resources Business Partner
       - Lead HR Business Partner
       - Human Resources Generalist
+      - Human Resource Generalist        # singular variant — word matching is exact-word
       - Senior Human Resources Generalist
       - Human Resources Advisor
       - Senior Human Resources Advisor
@@ -116,6 +120,7 @@ presets:
       - Corporate Recruiter
       - Executive Recruiter
       - Recruitment Manager
+      - Recruitment Specialist
       - Recruitment Consultant
       - Senior Recruitment Consultant
       - Talent Acquisition Lead
@@ -123,7 +128,10 @@ presets:
       - Senior HR Consultant
     filter:
       - hr
-      - human resources
+      # Singular on purpose: substring matching means "human resource" admits
+      # BOTH "Human Resource Generalist" and "Human Resources Manager", whereas
+      # the plural form silently excluded every singular-titled posting.
+      - human resource
       - people operations
       - talent acquisition
       - recruiter

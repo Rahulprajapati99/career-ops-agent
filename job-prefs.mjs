@@ -33,7 +33,7 @@
  */
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
 import { REPO_ROOT, userRootFor } from './user-env.mjs';
@@ -353,10 +353,25 @@ if (isMain) {
 
     const presetName = flagValue(args, '--preset');
     const titlesArg = flagValue(args, '--titles');
-    if (!presetName && !titlesArg) throw new Error('pass --preset <name> or --titles "a, b, c"');
+    const fromCv = args.includes('--from-cv');
+    if (!presetName && !titlesArg && !fromCv) {
+      throw new Error('pass --preset <name>, --titles "a, b, c", or --from-cv');
+    }
 
     let preset;
-    if (presetName) {
+    if (fromCv) {
+      // Derive the search from this user's OWN résumé. The named presets describe
+      // specific people; a new member from another field needs their own profile,
+      // not somebody else's role list. Preset-shaped, so it applies identically.
+      const cvPath = join(dirname(portalsPath), 'cv.md');
+      if (!existsSync(cvPath)) throw new Error(`no résumé at ${cvPath} — the user must upload one first`);
+      const { derivePrefsFromCv } = await import('./derive-prefs.mjs');
+      preset = derivePrefsFromCv(readFileSync(cvPath, 'utf-8'));
+      if (!preset.confident) {
+        throw new Error('could not read enough job titles from that résumé to aim a scan — set them explicitly with --titles "a, b, c"');
+      }
+      console.log(`📄 Derived from cv.md: ${preset.titles.join(' · ')}`);
+    } else if (presetName) {
       preset = presets[presetName];
       if (!preset) throw new Error(`unknown preset "${presetName}" (have: ${Object.keys(presets).join(', ')})`);
     } else {

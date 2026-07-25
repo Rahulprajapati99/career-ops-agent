@@ -647,63 +647,46 @@ async function handleCvPaste(chatId, text) {
 // ---------------------------------------------------------------------------
 // Scan preference (which roles to hunt for) — asked at onboarding, /roles later
 // ---------------------------------------------------------------------------
-/** Load the shared role presets. Returns [] when the template is unreadable. */
-async function loadPresets() {
-  try {
-    const yaml = (await import('js-yaml')).default;
-    const cfg = yaml.load(fs.readFileSync(path.join(REPO_ROOT, 'templates', 'role-presets.yml'), 'utf-8')) || {};
-    return Object.entries(cfg.presets || {}).map(([id, p]) => ({ id, label: p.label || id }));
-  } catch { return []; }
-}
-
 /**
- * Ask which track to aim this user's scan at. Without this a new member
- * inherits the "software engineer" seed and gets a pipeline of jobs they
- * never wanted — the scan has to be pointed at somebody.
+ * Aim this user's scan at the roles THEIR OWN résumé shows.
+ *
+ * Deliberately not a menu of the existing members' tracks: a new family member
+ * can come from any field, and offering them somebody else's role list would
+ * point their scan at jobs they cannot do. derive-prefs.mjs reads their titles,
+ * skills and seniority straight out of cv.md (zero tokens, deterministic), so
+ * the search fits whoever just joined. /roles re-runs it after a CV update.
  */
 async function askScanPreference(chatId) {
-  const presets = await loadPresets();
-  if (presets.length === 0) return;
-  await bot.sendMessage(chatId,
-    '🎯 What kind of roles should I hunt for you?\n\n'
-    + 'This sets your search terms, title filter, and which jobs float to the top of /jobs. '
-    + 'You can change it any time with /roles.',
-    {
-      reply_markup: {
-        inline_keyboard: [
-          ...presets.map((p) => ([{ text: p.label, callback_data: `preset:${p.id}` }])),
-          [{ text: '⏭ Skip for now', callback_data: 'preset:skip' }],
-        ],
-      },
-    });
-}
-
-/** Apply a preset to the caller's own portals.yml. */
-async function applyScanPreference(chatId, presetId) {
-  const { opts } = userCtx(chatId);
-  const presets = await loadPresets();
-  const chosen = presets.find((p) => p.id === presetId);
-  if (!chosen) {
-    await bot.sendMessage(chatId, 'That role profile is no longer available — send /roles to pick again.');
+  const { root, opts } = userCtx(chatId);
+  if (cvIsPlaceholder(root)) {
+    await bot.sendMessage(chatId, 'Send me your resume first (a .pdf/.md/.txt file, or /setcv to paste it) — I read your target roles from it.');
     return;
   }
-  await bot.sendMessage(chatId, `🎯 Pointing your scan at *${chosen.label}*...`, { parse_mode: 'Markdown' });
+  await bot.sendMessage(chatId, '🎯 Reading your resume to set up your job search...');
   try {
-    // execFile-style argv via the shared runner: the preset id is validated
-    // against the template above, so nothing user-typed reaches a shell.
     const { stdout } = await execFileAsync(
       process.execPath,
-      [path.join(REPO_ROOT, 'job-prefs.mjs'), 'set', String(chatId), '--preset', presetId],
+      [path.join(REPO_ROOT, 'job-prefs.mjs'), 'set', String(chatId), '--from-cv'],
       opts,
     );
-    const titles = stdout.match(/priority[_ ]titles?[^0-9]*(\d+)/i)?.[1];
-    await bot.sendMessage(chatId,
-      `✅ Search set to *${chosen.label}*.`
-      + (titles ? `\n${titles} target roles will float to the top of /jobs.` : '')
-      + '\n\nRun /scan to pull fresh jobs with these settings.',
-      { parse_mode: 'Markdown' });
+    const derived = stdout.match(/Derived from cv\.md:\s*(.+)/)?.[1]?.trim() || '';
+    const titles = stdout.match(/^\s*titles\s*:\s*(.+)$/m)?.[1]?.trim() || '';
+    await sendMd(chatId,
+      '✅ *Your job search is set up from your resume.*\n\n'
+      + (derived ? `🎯 Target roles: ${derived}\n` : '')
+      + (titles ? `🔍 Matching on: ${titles}\n` : '')
+      + '\nThese roles float to the top of /jobs, newest first. Run /scan to pull fresh jobs.\n\n'
+      + '_Not quite right? Send /roles after updating your resume, or ask the admin to set exact titles._');
   } catch (error) {
-    console.error(`[${chatId}] preset error:`, error);
+    const msg = String(error?.stdout || error?.stderr || error?.message || '');
+    if (/enough job titles/i.test(msg)) {
+      await bot.sendMessage(chatId,
+        '⚠️ I could not read clear job titles from your resume, so I have left your search as-is.\n\n'
+        + 'Make sure your resume lists your roles as headings (e.g. "Senior QA Engineer — Acme, 2020-2024"), '
+        + 'then send /roles again. The admin can also set your titles directly.');
+      return;
+    }
+    console.error(`[${chatId}] derive-prefs error:`, error);
     await bot.sendMessage(chatId, friendlyError(error));
   }
 }
@@ -1056,7 +1039,7 @@ async function handleHelp(chatId) {
     `*Setup:*\n` +
     `/setcv — import/replace your resume\n` +
     `/digest — your best-matching jobs now (/digest off to stop the daily push)\n` +
-    `/roles — set which kinds of roles I hunt for you\n` +
+    `/roles — re-read your resume to set which roles I hunt for you\n` +
     `/india on|off — include Indian postings (default: off)\n` +
     `/setkey gemini|hunter|serpapi <key> — your API keys (AI quota · email verify · Google Jobs)\n` +
     `/credits — API searches used this month\n` +
@@ -1303,15 +1286,6 @@ bot.on('callback_query', async (query) => {
   if (query.data === 'tailor_skip') {
     await bot.sendMessage(chatId,
       '👍 Skipped — the evaluation is saved. /tailor works any time before your next evaluation.');
-  }
-  // Role-preset choice from onboarding or /roles.
-  if (query.data?.startsWith('preset:')) {
-    const id = query.data.slice('preset:'.length);
-    if (id === 'skip') {
-      await bot.sendMessage(chatId, '👍 Skipped — your scan keeps its current settings. Send /roles whenever you want to set it.');
-      return;
-    }
-    return applyScanPreference(chatId, id);
   }
   // Digest "Evaluate" button: callback_data is capped at 64 bytes, so it carries
   // the offer index and the URL is resolved from the user's own ledger.
