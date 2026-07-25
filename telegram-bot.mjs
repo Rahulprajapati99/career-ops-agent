@@ -716,21 +716,29 @@ async function handleJobs(chatId, page = 1) {
   const start = (p - 1) * PER_PAGE;
   const slice = rows.slice(start, start + PER_PAGE);
 
-  let msg = `🗂 *Matched jobs — ${rows.length} total* (newest first) · page ${p}/${pages}\n\n`;
+  // PLAIN TEXT, no parse_mode — deliberate, and load-bearing. Telegram's legacy
+  // Markdown reads `_…_` as italics and CONSUMES the underscores when it renders,
+  // so an Adzuna link (`?se=_qT4…&utm_medium=…&utm_source=…`) was displayed with
+  // its underscores missing. Users copied that broken link back to the bot and
+  // extraction failed. Worse, with several such links per page the underscores
+  // pair up across the whole message, so Telegram raises no parse error and the
+  // plain-text fallback in sendMd() never fires. Bare URLs are auto-linked in
+  // plain text anyway, so nothing is lost by dropping the formatting.
+  let msg = `🗂 Matched jobs — ${rows.length} total (newest first) · page ${p}/${pages}\n\n`;
   slice.forEach((row, i) => {
     const parts = row.replace(/^- \[ \]\s*/, '').split('|').map((s) => s.trim());
     const [url, company, title, location] = parts;
     const remoteTag = /\bremote\b|anywhere|worldwide|americas/i.test(location || '') ? ' 🏠' : '';
     const posted = parts.map((c) => c.match(/^posted:\s*(\d{4}-\d{2}-\d{2})$/i)?.[1]).find(Boolean);
-    msg += `*${start + i + 1}. ${company || '?'}* — ${title || '?'}${remoteTag}\n`;
+    msg += `${start + i + 1}. ${company || '?'} — ${title || '?'}${remoteTag}\n`;
     if (posted) msg += `   🗓 ${posted}\n`;
     if (location) msg += `   📍 ${location}\n`;
     if (url) msg += `   ${url}\n`;
     msg += '\n';
   });
-  if (p < pages) msg += `➡️ Send \`/jobs ${p + 1}\` for the next ${Math.min(PER_PAGE, rows.length - start - PER_PAGE)}.`;
-  else if (pages > 1) msg += `_(end of list · \`/jobs 1\` to start over)_`;
-  await sendMd(chatId, msg, { disable_web_page_preview: true });
+  if (p < pages) msg += `➡️ Send /jobs ${p + 1} for the next ${Math.min(PER_PAGE, rows.length - start - PER_PAGE)}.`;
+  else if (pages > 1) msg += `(end of list · send /jobs 1 to start over)`;
+  await bot.sendMessage(chatId, msg, { disable_web_page_preview: true });
 }
 
 async function handleScan(chatId) {
