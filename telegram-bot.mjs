@@ -21,12 +21,12 @@
 
 import 'dotenv/config';
 import TelegramBot from 'node-telegram-bot-api';
-import { exec } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import fs from 'fs';
 import path from 'path';
 
-const execAsync = promisify(exec);
+const execFileAsync = promisify(execFile);
 
 // ---------------------------------------------------------------------------
 // Environment & setup
@@ -35,6 +35,20 @@ const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) {
   console.error('❌ TELEGRAM_BOT_TOKEN missing in .env');
   process.exit(1);
+}
+
+// Security: Whitelist allowed Telegram user/chat IDs from environment
+const rawAllowedIds = process.env.TELEGRAM_ALLOWED_USER_IDS || '';
+const ALLOWED_CHAT_IDS = new Set(
+  rawAllowedIds.split(',').map(s => s.trim()).filter(Boolean)
+);
+
+function isAuthorized(chatId) {
+  if (ALLOWED_CHAT_IDS.size === 0) {
+    // If no whitelist configured, warn in console
+    return true;
+  }
+  return ALLOWED_CHAT_IDS.has(String(chatId));
 }
 
 const CWD = process.cwd();
@@ -46,6 +60,11 @@ if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
 const bot = new TelegramBot(token, { polling: true });
 
 console.log('🤖 Career-Ops Telegram Bot is online and listening...');
+if (ALLOWED_CHAT_IDS.size > 0) {
+  console.log(`🔒 Security: Bot restricted to ${ALLOWED_CHAT_IDS.size} authorized chat ID(s).`);
+} else {
+  console.warn('⚠️ Security Warning: TELEGRAM_ALLOWED_USER_IDS is not set. All users can access.');
+}
 
 // ---------------------------------------------------------------------------
 // Per-chat state (stores last evaluation context for tailor/cover/apply)
@@ -119,13 +138,26 @@ async function handleUrl(chatId, url) {
   );
 
   try {
-    // Step 1: Extract JD
-    await execAsync(`node browser-extract.mjs "${url}" > "${jdFile}"`, LONG_EXEC_OPTS);
+    // Validate URL protocol
+    const parsedUrl = new URL(url);
+    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
+      throw new Error('Only HTTP/HTTPS URLs are supported.');
+    }
+
+    // Step 1: Extract JD safely using execFile (no shell injection)
+    const { stdout: extractedJd } = await execFileAsync(
+      'node',
+      ['browser-extract.mjs', url],
+      LONG_EXEC_OPTS
+    );
+    fs.writeFileSync(jdFile, extractedJd, 'utf8');
+
     await bot.sendMessage(chatId, '✅ Extracted successfully. Now evaluating against your CV...');
 
     // Step 2: Evaluate
-    const { stdout: evalOutput } = await execAsync(
-      `node gemini-eval.mjs --file "${jdFile}"`,
+    const { stdout: evalOutput } = await execFileAsync(
+      'node',
+      ['gemini-eval.mjs', '--file', jdFile],
       LONG_EXEC_OPTS
     );
 
@@ -249,9 +281,10 @@ async function handleTailor(chatId) {
   );
 
   try {
-    // Step 1: Tailor the CV using Gemini
-    const { stdout: tailorOutput } = await execAsync(
-      `node gemini-tailor.mjs --jd "${state.jdFile}" --report "${state.reportPath}"`,
+    // Step 1: Tailor the CV using Gemini safely
+    const { stdout: tailorOutput } = await execFileAsync(
+      'node',
+      ['gemini-tailor.mjs', '--jd', state.jdFile, '--report', state.reportPath],
       LONG_EXEC_OPTS
     );
 
@@ -263,10 +296,11 @@ async function handleTailor(chatId) {
 
     await bot.sendMessage(chatId, '✅ CV tailored. Generating PDF...');
 
-    // Step 2: Generate PDF from tailored HTML
+    // Step 2: Generate PDF from tailored HTML safely
     const pdfPath = htmlPath.replace(/\.html$/, '.pdf');
-    await execAsync(
-      `node generate-pdf.mjs "${htmlPath}" "${pdfPath}"`,
+    await execFileAsync(
+      'node',
+      ['generate-pdf.mjs', htmlPath, pdfPath],
       LONG_EXEC_OPTS
     );
 
@@ -356,11 +390,12 @@ async function handleHelp(chatId) {
 
 async function handleStatus(chatId, companyFilter) {
   try {
-    const cmd = companyFilter
-      ? `node tracker.mjs query --company "${companyFilter}" --json --limit 20`
-      : `node tracker.mjs query --json --limit 20`;
+    const args = ['tracker.mjs', 'query', '--json', '--limit', '20'];
+    if (companyFilter) {
+      args.splice(2, 0, '--company', companyFilter);
+    }
 
-    const { stdout } = await execAsync(cmd, EXEC_OPTS);
+    const { stdout } = await execFileAsync('node', args, EXEC_OPTS);
 
     // Try to parse JSON output
     let rows;
@@ -441,8 +476,9 @@ async function handleCover(chatId) {
   try {
     // Generate cover letter JSON payload using Gemini, then render
     // For now, use a simplified approach: call gemini-tailor with cover-letter mode
-    const { stdout } = await execAsync(
-      `node generate-cover-letter.mjs --payload "${state.reportPath}"`,
+    const { stdout } = await execFileAsync(
+      'node',
+      ['generate-cover-letter.mjs', '--payload', state.reportPath],
       LONG_EXEC_OPTS
     );
 
@@ -490,8 +526,9 @@ async function handleApply(chatId, applyUrl) {
   await bot.sendMessage(chatId, '⏳ Generating ATS prefill cheat-sheet...');
 
   try {
-    const { stdout } = await execAsync(
-      `node prepare-application.mjs --url "${applyUrl}" --pdf "${pdfPath}"`,
+    const { stdout } = await execFileAsync(
+      'node',
+      ['prepare-application.mjs', '--url', applyUrl, '--pdf', pdfPath],
       EXEC_OPTS
     );
 
@@ -519,8 +556,9 @@ async function handleScan(chatId) {
   await bot.sendMessage(chatId, '⏳ Scanning ATS portals for new matching jobs... This may take 2-5 minutes.');
 
   try {
-    const { stdout } = await execAsync(
-      'node scan-ats-full.mjs --since 3 --json --limit 20',
+    const { stdout } = await execFileAsync(
+      'node',
+      ['scan-ats-full.mjs', '--since', '3', '--json', '--limit', '20'],
       { ...EXEC_OPTS, timeout: 600_000 } // 10 min timeout for scanning
     );
 
@@ -571,6 +609,12 @@ bot.on('message', async (msg) => {
   const chatId = msg.chat.id;
   const text = (msg.text || '').trim();
 
+  // Security: Check authorization whitelist
+  if (!isAuthorized(chatId)) {
+    console.warn(`[SECURITY] Blocked unauthorized message from chat ID: ${chatId}`);
+    return bot.sendMessage(chatId, `⛔ Access Denied: Chat ID (${chatId}) is not authorized to control this system.`);
+  }
+
   // Ignore empty messages or non-text
   if (!text) return;
 
@@ -609,6 +653,12 @@ bot.on('message', async (msg) => {
 bot.on('callback_query', async (query) => {
   const chatId = query.message.chat.id;
   const data = query.data;
+
+  // Security: Check authorization whitelist
+  if (!isAuthorized(chatId)) {
+    console.warn(`[SECURITY] Blocked unauthorized callback from chat ID: ${chatId}`);
+    return bot.answerCallbackQuery(query.id, { text: '⛔ Unauthorized', show_alert: true });
+  }
 
   // Acknowledge the button press immediately
   await bot.answerCallbackQuery(query.id);
