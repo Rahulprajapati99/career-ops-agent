@@ -99,6 +99,17 @@ data/model-blacklist.json
 *.mov
 *.mp4
 
+# Web subproject (consolidated single .gitignore)
+web/node_modules/
+web/.next*
+web/out/
+web/dist/
+web/.turbo/
+web/.playwright-mcp/
+web/.claude/
+web/next-env.d.ts
+
+
 # CLI-specific local config
 .claude/settings.local.json
 .claude/memory/
